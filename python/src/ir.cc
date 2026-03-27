@@ -27,6 +27,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
+#include "triton/Dialect/TritonCPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/Support/FileSystem.h"
@@ -1580,6 +1581,96 @@ void init_triton_ir(py::module &&m) {
              if (axis < 0 || axis > 3)
                throw pybind11::index_error("program_id must be in [0,3]");
              return self.create<GetNumProgramsOp>(axis);
+           })
+      .def("create_cpu_fused_decode_step",
+           [](TritonOpBuilder &self,
+              mlir::Value &tok_id, mlir::Value &pos,
+              mlir::Value &embed, mlir::Value &layer_ptrs,
+              mlir::Value &kc, mlir::Value &vc,
+              mlir::Value &rcos, mlir::Value &rsin,
+              mlir::Value &fnorm,
+              mlir::Value &lm_packed, mlir::Value &lm_scale,
+              mlir::Value &hidden, mlir::Value &hd,
+              mlir::Value &nh, mlir::Value &nkv,
+              mlir::Value &inter, mlir::Value &vocab,
+              mlir::Value &nlayers, mlir::Value &maxseq,
+              float rms_eps) -> mlir::Value {
+             auto op = self.create<CpuFusedDecodeStepOp>(
+                 tok_id, pos, embed, layer_ptrs, kc, vc, rcos, rsin,
+                 fnorm, lm_packed, lm_scale,
+                 hidden, hd, nh, nkv, inter, vocab, nlayers, maxseq,
+                 self.getBuilder().getF32FloatAttr(rms_eps));
+             return op.getNextToken();
+           })
+      .def("create_cpu_fused_transformer_layer",
+           [](TritonOpBuilder &self,
+              mlir::Value &hidden,
+              mlir::Value &wq, mlir::Value &wk, mlir::Value &wv, mlir::Value &wo,
+              mlir::Value &wq_s, mlir::Value &wk_s, mlir::Value &wv_s, mlir::Value &wo_s,
+              mlir::Value &q_norm, mlir::Value &k_norm,
+              mlir::Value &cos_emb, mlir::Value &sin_emb,
+              mlir::Value &k_cache, mlir::Value &v_cache,
+              mlir::Value &cache_pos, mlir::Value &max_seq,
+              mlir::Value &gate, mlir::Value &up, mlir::Value &down,
+              mlir::Value &gate_s, mlir::Value &up_s, mlir::Value &down_s,
+              mlir::Value &in_norm, mlir::Value &post_norm,
+              mlir::Value &hidden_dim, mlir::Value &head_dim,
+              mlir::Value &n_heads, mlir::Value &n_kv_heads,
+              mlir::Value &intermediate, float rms_eps) {
+             self.create<CpuFusedTransformerLayerOp>(
+                 hidden,
+                 wq, wk, wv, wo, wq_s, wk_s, wv_s, wo_s,
+                 q_norm, k_norm, cos_emb, sin_emb,
+                 k_cache, v_cache, cache_pos, max_seq,
+                 gate, up, down, gate_s, up_s, down_s,
+                 in_norm, post_norm,
+                 hidden_dim, head_dim, n_heads, n_kv_heads, intermediate,
+                 self.getBuilder().getF32FloatAttr(rms_eps));
+           })
+      .def("create_cpu_fused_mlp",
+           [](TritonOpBuilder &self, mlir::Value &x, mlir::Value &gp,
+              mlir::Value &up, mlir::Value &gs, mlir::Value &us,
+              mlir::Value &out, mlir::Value &K, mlir::Value &N) {
+             self.create<CpuFusedMlpOp>(x, gp, up, gs, us, out, K, N);
+           })
+      .def("create_cpu_flash_attn_decode",
+           [](TritonOpBuilder &self, mlir::Value &q, mlir::Value &k,
+              mlir::Value &v, mlir::Value &out,
+              mlir::Value &seq_len, mlir::Value &head_dim,
+              float sm_scale,
+              mlir::Value &num_heads, mlir::Value &num_kv_heads,
+              mlir::Value &stride_kn, mlir::Value &stride_vn) {
+             self.create<CpuFlashAttnDecodeOp>(
+                 q, k, v, out, seq_len, head_dim,
+                 self.getBuilder().getF32FloatAttr(sm_scale),
+                 num_heads, num_kv_heads, stride_kn, stride_vn);
+           })
+      .def("create_cpu_swiglu",
+           [](TritonOpBuilder &self, mlir::Value &gate, mlir::Value &up,
+              mlir::Value &out, mlir::Value &N) {
+             self.create<CpuSwigluOp>(gate, up, out, N);
+           })
+      .def("create_cpu_sdot_gemv",
+           [](TritonOpBuilder &self, mlir::Value &a_ptr, mlir::Value &b_ptr,
+              mlir::Value &c_ptr, mlir::Value &K, mlir::Value &N) {
+             self.create<CpuSdotGemvOp>(a_ptr, b_ptr, c_ptr, K, N);
+           })
+      .def("create_cpu_sdot_gemv_fused_bf16",
+           [](TritonOpBuilder &self, mlir::Value &x_ptr, mlir::Value &b_ptr,
+              mlir::Value &ws_ptr, mlir::Value &out_ptr,
+              mlir::Value &K, mlir::Value &N) {
+             self.create<CpuSdotGemvFusedBf16Op>(x_ptr, b_ptr, ws_ptr,
+                                                   out_ptr, K, N);
+           })
+      .def("create_cpu_sdot_pack_weights",
+           [](TritonOpBuilder &self, mlir::Value &b_ptr,
+              mlir::Value &bp_ptr, mlir::Value &K, mlir::Value &N) {
+             self.create<CpuSdotPackWeightsOp>(b_ptr, bp_ptr, K, N);
+           })
+      .def("create_cpu_neon_sdot",
+           [](TritonOpBuilder &self, mlir::Value &acc, mlir::Value &a,
+              mlir::Value &b) -> mlir::Value {
+             return self.create<CpuNeonSdotOp>(acc.getType(), acc, a, b);
            })
       .def("create_dot",
            [](TritonOpBuilder &self, mlir::Value &a, mlir::Value &b,

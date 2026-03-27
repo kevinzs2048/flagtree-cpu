@@ -806,6 +806,160 @@ def TT_ExternElementwiseOp : TT_Op<"extern_elementwise", [Elementwise,
 }
 
 //
+// TLE-CPU: Fused Decode Step (embedding → all layers → norm → lm_head → argmax)
+//
+def TT_CpuFusedDecodeStepOp : TT_Op<"cpu_fused_decode_step", []> {
+    let summary = "TLE-CPU: Full decode step in one C call, returns next token ID";
+    let arguments = (ins
+        I64:$token_id, I64:$pos,
+        TT_Ptr:$embed_table,
+        TT_Ptr:$layer_ptrs,
+        TT_Ptr:$k_cache, TT_Ptr:$v_cache,
+        TT_Ptr:$rope_cos, TT_Ptr:$rope_sin,
+        TT_Ptr:$final_norm_w,
+        TT_Ptr:$lm_head_packed, TT_Ptr:$lm_head_scale,
+        I64:$hidden_dim, I64:$head_dim, I64:$n_heads, I64:$n_kv_heads,
+        I64:$intermediate, I64:$vocab_size, I64:$n_layers,
+        I64:$max_seq, F32Attr:$rms_eps
+    );
+    let results = (outs I64:$next_token);
+    let assemblyFormat = "operands attr-dict `:` type(operands)";
+}
+
+//
+// TLE-CPU: Fused Transformer Decode Layer
+//
+def TT_CpuFusedTransformerLayerOp : TT_Op<"cpu_fused_transformer_layer", []> {
+    let summary = "TLE-CPU: Full transformer decode layer in one C call";
+    let description = [{
+      RMSNorm → QKV GEMV → QK_Norm → RoPE → KV_cache_write →
+      Attention → O_GEMV → Residual → RMSNorm → Gate+Up+SWIGLU → Down_GEMV → Residual.
+      Zero tensor allocation. Zero Python dispatch within layer.
+    }];
+    let arguments = (ins
+        TT_Ptr:$hidden_states,
+        TT_Ptr:$wq, TT_Ptr:$wk, TT_Ptr:$wv, TT_Ptr:$wo,
+        TT_Ptr:$wq_s, TT_Ptr:$wk_s, TT_Ptr:$wv_s, TT_Ptr:$wo_s,
+        TT_Ptr:$q_norm_w, TT_Ptr:$k_norm_w,
+        TT_Ptr:$cos_emb, TT_Ptr:$sin_emb,
+        TT_Ptr:$k_cache, TT_Ptr:$v_cache,
+        I64:$cache_pos, I64:$max_seq_len,
+        TT_Ptr:$gate_w, TT_Ptr:$up_w, TT_Ptr:$down_w,
+        TT_Ptr:$gate_s, TT_Ptr:$up_s, TT_Ptr:$down_s,
+        TT_Ptr:$input_norm_w, TT_Ptr:$post_norm_w,
+        I64:$hidden_dim, I64:$head_dim, I64:$n_heads, I64:$n_kv_heads,
+        I64:$intermediate, F32Attr:$rms_eps
+    );
+    let results = (outs);
+    let assemblyFormat = "operands attr-dict `:` type(operands)";
+}
+
+//
+// TLE-CPU: Fused MLP (gate GEMV + up GEMV + SWIGLU)
+//
+def TT_CpuFusedMlpOp : TT_Op<"cpu_fused_mlp", []> {
+    let summary = "TLE-CPU: Fused MLP = gate SDOT GEMV + up SDOT GEMV + SWIGLU";
+    let arguments = (ins TT_Ptr:$x_ptr,
+                         TT_Ptr:$gate_packed_ptr, TT_Ptr:$up_packed_ptr,
+                         TT_Ptr:$gate_scale_ptr, TT_Ptr:$up_scale_ptr,
+                         TT_Ptr:$out_ptr,
+                         I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $gate_packed_ptr `,` $up_packed_ptr `,` $gate_scale_ptr `,` $up_scale_ptr `,` $out_ptr `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($gate_packed_ptr) `,` type($up_packed_ptr) `,` type($gate_scale_ptr) `,` type($up_scale_ptr) `,` type($out_ptr)";
+}
+
+//
+// TLE-CPU: Flash Attention Decode (M=1, online softmax)
+//
+def TT_CpuFlashAttnDecodeOp : TT_Op<"cpu_flash_attn_decode", []> {
+    let summary = "TLE-CPU: M=1 Flash Attention with online softmax";
+    let arguments = (ins TT_Ptr:$q_ptr, TT_Ptr:$k_ptr, TT_Ptr:$v_ptr,
+                         TT_Ptr:$out_ptr,
+                         I64:$seq_len, I64:$head_dim,
+                         F32Attr:$sm_scale,
+                         I64:$num_heads, I64:$num_kv_heads,
+                         I64:$stride_kn, I64:$stride_vn);
+    let results = (outs);
+    let assemblyFormat = "$q_ptr `,` $k_ptr `,` $v_ptr `,` $out_ptr `,` $seq_len `,` $head_dim `,` $num_heads `,` $num_kv_heads `,` $stride_kn `,` $stride_vn attr-dict `:` type($q_ptr) `,` type($k_ptr) `,` type($v_ptr) `,` type($out_ptr)";
+}
+
+//
+// TLE-CPU: Fused SWIGLU (silu(gate) * up)
+//
+def TT_CpuSwigluOp : TT_Op<"cpu_swiglu", []> {
+    let summary = "TLE-CPU: Fused SWIGLU activation (silu(gate) * up)";
+    let arguments = (ins TT_Ptr:$gate_ptr, TT_Ptr:$up_ptr, TT_Ptr:$out_ptr, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$gate_ptr `,` $up_ptr `,` $out_ptr `,` $N attr-dict `:` type($gate_ptr) `,` type($up_ptr) `,` type($out_ptr)";
+}
+
+//
+// TLE-CPU: NEON SDOT intrinsic op
+//
+def TT_CpuNeonSdotOp : TT_Op<"cpu_neon_sdot", [Pure]> {
+    let summary = "NEON SDOT: 4-lane signed int8 dot product accumulate";
+    let description = [{
+      TLE-CPU primitive. Computes NEON SDOT (signed dot product) on ARM64.
+      acc: tensor<4xi32>, a: tensor<16xi8>, b: tensor<16xi8> -> tensor<4xi32>
+      Lowered to: llvm.aarch64.neon.sdot.v4i32.v16i8 intrinsic.
+    }];
+    let arguments = (ins TT_Type:$acc, TT_Type:$a, TT_Type:$b);
+    let results = (outs TT_Type:$result);
+    let assemblyFormat = "$acc `,` $a `,` $b attr-dict `:` type($acc) `,` type($a) `,` type($b) `->` type($result)";
+}
+
+//
+// TLE-CPU: SDOT GEMV micro-kernel (M=1 INT8 GEMV with pre-packed weights)
+// Calls sdot_gemv_m1_prepacked() from libTritonCPURuntime.so
+//
+def TT_CpuSdotGemvOp : TT_Op<"cpu_sdot_gemv", []> {
+    let summary = "TLE-CPU: M=1 INT8 GEMV micro-kernel using NEON SDOT";
+    let description = [{
+      Performs M=1 INT8 GEMV with pre-packed weights via NEON SDOT.
+      A: [K] int8, B_packed: [K//4, N//4, 4, 4] int8, C: [N] int32 output.
+      Calls the sdot_gemv_m1_prepacked runtime function in libTritonCPURuntime.so.
+      OMP parallelized internally.
+    }];
+    let arguments = (ins
+        TT_Ptr:$a_ptr,
+        TT_Ptr:$b_packed_ptr,
+        TT_Ptr:$c_ptr,
+        I64:$K,
+        I64:$N
+    );
+    let results = (outs);
+    let assemblyFormat = "$a_ptr `,` $b_packed_ptr `,` $c_ptr `,` $K `,` $N attr-dict `:` type($a_ptr) `,` type($b_packed_ptr) `,` type($c_ptr)";
+}
+
+//
+// TLE-CPU: Fused BF16→INT8 quant + SDOT GEMV + dequant→BF16
+//
+def TT_CpuSdotGemvFusedBf16Op : TT_Op<"cpu_sdot_gemv_fused_bf16", []> {
+    let summary = "TLE-CPU: Fused BF16 INT8 GEMV with dynamic activation quantization";
+    let description = [{
+      Fused: BF16 activation → dynamic INT8 quantization → SDOT GEMV → dequant → BF16 output.
+      Eliminates Python-side abs/div/clamp/to overhead.
+      x: [K] bf16, B_packed: SDOT format, w_scale: [N] fp32, out: [N] bf16.
+    }];
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$b_packed_ptr,
+                         TT_Ptr:$w_scale_ptr, TT_Ptr:$out_ptr,
+                         I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $b_packed_ptr `,` $w_scale_ptr `,` $out_ptr `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($b_packed_ptr) `,` type($w_scale_ptr) `,` type($out_ptr)";
+}
+
+//
+// TLE-CPU: Pack weights for SDOT
+//
+def TT_CpuSdotPackWeightsOp : TT_Op<"cpu_sdot_pack_weights", []> {
+    let summary = "TLE-CPU: Pack INT8 weights from row-major to SDOT lane format";
+    let arguments = (ins TT_Ptr:$b_ptr, TT_Ptr:$b_packed_ptr,
+                         I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$b_ptr `,` $b_packed_ptr `,` $K `,` $N attr-dict `:` type($b_ptr) `,` type($b_packed_ptr)";
+}
+
+//
 // Make Range Op
 //
 def TT_MakeRangeOp : TT_Op<"make_range", [Pure]> {
