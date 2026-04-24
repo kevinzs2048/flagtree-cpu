@@ -205,6 +205,108 @@ def flash_attn_decode(q_ptr, k_ptr, v_ptr, out_ptr,
 
 
 @builtin
+def rms_norm(x_ptr, weight_ptr, out_ptr, D, eps, _builder=None):
+    """TLE-CPU: RMSNorm — out = (x / rms(x)) * weight.
+
+    Single NEON kernel replaces 5 ATen decomposed ops.
+    BF16 input/output, single-threaded (optimal for decode D <= 4096).
+
+    Args:
+        x_ptr: pointer to [D] bfloat16 input
+        weight_ptr: pointer to [D] bfloat16 weight
+        out_ptr: pointer to [D] bfloat16 output
+        D: hidden dimension
+        eps: epsilon for numerical stability
+    """
+    D_raw = _unwrap_if_constexpr(D)
+    D_val = D_raw.handle if hasattr(D_raw, 'handle') else _builder.get_int64(D_raw)
+    eps_f = float(_unwrap_if_constexpr(eps))
+    _builder.create_cpu_rms_norm(x_ptr.handle, weight_ptr.handle, out_ptr.handle, D_val, eps_f)
+    return None
+
+
+@builtin
+def causal_conv1d_update(hidden_ptr, state_ptr, weight_ptr, bias_ptr, out_ptr,
+                          B, C, kernel_size, silu, has_bias, _builder=None):
+    """TLE-CPU: Depthwise causal conv1d update (T=1, bf16, kernel_size=4).
+
+    Per (b, c): out[b,c] = sum_k v[b,c,k] * weight[c,k] where
+    v = [state[b,c,0..kernel_size-2], hidden[b,c]]; then roll state by 1.
+    Optional bias (pass null pointer to skip) and SiLU activation.
+
+    Replaces aten::conv1d (groups=C) which has high mkldnn dispatch overhead
+    on Qwen3.5/Qwen3-Next conv state update.
+
+    Args:
+        hidden_ptr: [B, C] bf16 input
+        state_ptr:  [B, C, kernel_size-1] bf16 IN-OUT (rolled)
+        weight_ptr: [C, kernel_size] bf16
+        bias_ptr:   [C] bf16 or null
+        out_ptr:    [B, C] bf16 output
+        B, C, kernel_size: dimensions
+        silu: 1 to apply SiLU, 0 otherwise
+    """
+    def _i64(x):
+        raw = _unwrap_if_constexpr(x)
+        if hasattr(raw, 'handle'):
+            handle = raw.handle
+            i64_ty = _builder.get_int64_ty()
+            try:
+                handle = _builder.create_int_cast(handle, i64_ty, True)
+            except Exception:
+                pass
+            return handle
+        return _builder.get_int64(raw)
+
+    _builder.create_cpu_causal_conv1d_update(
+        hidden_ptr.handle, state_ptr.handle, weight_ptr.handle,
+        bias_ptr.handle, out_ptr.handle,
+        _i64(B), _i64(C), _i64(kernel_size), _i64(silu), _i64(has_bias))
+    return None
+
+
+@builtin
+def gated_delta_decode(q_ptr, k_ptr, v_ptr, g_ptr, beta_ptr,
+                       state_ptr, out_ptr,
+                       B, H, k_dim, v_dim, use_l2norm,
+                       _builder=None):
+    """TLE-CPU: Gated Delta Net recurrent decode (T=1, fp32).
+
+    Single fused C kernel replaces ~8 ATen ops per layer per token.
+    State update + output dot fused into a single sweep over state
+    (matches llama.cpp Metal/SYCL backends).
+
+    Args:
+        q_ptr, k_ptr: pointer to [B, H, k_dim] float32
+        v_ptr:        pointer to [B, H, v_dim] float32
+        g_ptr:        pointer to [B, H] float32 (raw, exp'd in kernel)
+        beta_ptr:     pointer to [B, H] float32
+        state_ptr:    pointer to [B, H, k_dim, v_dim] float32 IN-OUT
+        out_ptr:      pointer to [B, H, v_dim] float32 OUT
+        B, H, k_dim, v_dim: dimensions (k_dim, v_dim ≤ 256)
+        use_l2norm:   1 to apply L2 norm of q & k along head_dim, 0 otherwise
+    """
+    def _i64(x):
+        raw = _unwrap_if_constexpr(x)
+        if hasattr(raw, 'handle'):
+            handle = raw.handle
+            i64_ty = _builder.get_int64_ty()
+            try:
+                handle = _builder.create_int_cast(handle, i64_ty, True)
+            except Exception:
+                pass
+            return handle
+        return _builder.get_int64(raw)
+
+    _builder.create_cpu_gated_delta_decode(
+        q_ptr.handle, k_ptr.handle, v_ptr.handle,
+        g_ptr.handle, beta_ptr.handle,
+        state_ptr.handle, out_ptr.handle,
+        _i64(B), _i64(H), _i64(k_dim), _i64(v_dim), _i64(use_l2norm))
+    return None
+
+
+@builtin
 def swiglu(gate_ptr, up_ptr, out_ptr, N, _builder=None):
     """TLE-CPU: Fused SWIGLU activation: out = silu(gate) * up.
 

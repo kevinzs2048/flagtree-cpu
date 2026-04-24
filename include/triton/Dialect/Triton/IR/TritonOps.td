@@ -884,6 +884,51 @@ def TT_CpuFlashAttnDecodeOp : TT_Op<"cpu_flash_attn_decode", []> {
 }
 
 //
+// TLE-CPU: RMSNorm (out = x / rms(x) * weight)
+//
+def TT_CpuRmsNormOp : TT_Op<"cpu_rms_norm", []> {
+    let summary = "TLE-CPU: RMSNorm (x / rms(x) * weight)";
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$weight_ptr, TT_Ptr:$out_ptr, I64:$D, F32Attr:$eps);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $weight_ptr `,` $out_ptr `,` $D attr-dict `:` type($x_ptr) `,` type($weight_ptr) `,` type($out_ptr)";
+}
+
+//
+// TLE-CPU: Gated Delta Net recurrent decode (T=1, fp32)
+//
+def TT_CpuCausalConv1dUpdateOp : TT_Op<"cpu_causal_conv1d_update", []> {
+    let summary = "TLE-CPU: Depthwise causal conv1d update (T=1, bf16, kernel_size=4)";
+    let description = [{
+      Per (b, c): out[b,c] = sum_k v[b,c,k] * weight[c,k] where v = [state[b,c,0..2], hidden[b,c]];
+      then roll state by 1. Optional bias and SiLU. Replaces aten::conv1d/mkldnn for the
+      decode-step conv state update on Qwen3.5/Qwen3-Next GDN.
+    }];
+    let arguments = (ins TT_Ptr:$hidden_ptr, TT_Ptr:$state_ptr,
+                         TT_Ptr:$weight_ptr, TT_Ptr:$bias_ptr,
+                         TT_Ptr:$out_ptr,
+                         I64:$B, I64:$C, I64:$kernel_size,
+                         I64:$silu, I64:$has_bias);
+    let results = (outs);
+    let assemblyFormat = "$hidden_ptr `,` $state_ptr `,` $weight_ptr `,` $bias_ptr `,` $out_ptr `,` $B `,` $C `,` $kernel_size `,` $silu `,` $has_bias attr-dict `:` type($hidden_ptr) `,` type($state_ptr) `,` type($weight_ptr) `,` type($bias_ptr) `,` type($out_ptr)";
+}
+
+def TT_CpuGatedDeltaDecodeOp : TT_Op<"cpu_gated_delta_decode", []> {
+    let summary = "TLE-CPU: Gated Delta Net recurrent decode (T=1, fp32)";
+    let description = [{
+      Per-(b, h): state *= exp(g); kv_mem = state·k; delta = (v - kv_mem)·beta;
+      state += k⊗delta; out = state·(q/√k_dim). State update + output dot fused
+      into a single sweep over state. Optional in-kernel L2 norm of q & k.
+    }];
+    let arguments = (ins TT_Ptr:$q_ptr, TT_Ptr:$k_ptr, TT_Ptr:$v_ptr,
+                         TT_Ptr:$g_ptr, TT_Ptr:$beta_ptr,
+                         TT_Ptr:$state_ptr, TT_Ptr:$out_ptr,
+                         I64:$B, I64:$H, I64:$k_dim, I64:$v_dim,
+                         I64:$use_l2norm);
+    let results = (outs);
+    let assemblyFormat = "$q_ptr `,` $k_ptr `,` $v_ptr `,` $g_ptr `,` $beta_ptr `,` $state_ptr `,` $out_ptr `,` $B `,` $H `,` $k_dim `,` $v_dim `,` $use_l2norm attr-dict `:` type($q_ptr) `,` type($k_ptr) `,` type($v_ptr) `,` type($g_ptr) `,` type($beta_ptr) `,` type($state_ptr) `,` type($out_ptr)";
+}
+
+//
 // TLE-CPU: Fused SWIGLU (silu(gate) * up)
 //
 def TT_CpuSwigluOp : TT_Op<"cpu_swiglu", []> {

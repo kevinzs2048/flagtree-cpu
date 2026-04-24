@@ -1645,6 +1645,34 @@ void init_triton_ir(py::module &&m) {
                  self.getBuilder().getF32FloatAttr(sm_scale),
                  num_heads, num_kv_heads, stride_kn, stride_vn);
            })
+      .def("create_cpu_rms_norm",
+           [](TritonOpBuilder &self, mlir::Value &x, mlir::Value &weight,
+              mlir::Value &out, mlir::Value &D, float eps) {
+             self.create<CpuRmsNormOp>(
+                 x, weight, out, D,
+                 self.getBuilder().getF32FloatAttr(eps));
+           })
+      .def("create_cpu_causal_conv1d_update",
+           [](TritonOpBuilder &self, mlir::Value &hidden, mlir::Value &state,
+              mlir::Value &weight, mlir::Value &bias, mlir::Value &out,
+              mlir::Value &B, mlir::Value &C,
+              mlir::Value &kernel_size, mlir::Value &silu,
+              mlir::Value &has_bias) {
+             self.create<CpuCausalConv1dUpdateOp>(
+                 hidden, state, weight, bias, out, B, C, kernel_size,
+                 silu, has_bias);
+           })
+      .def("create_cpu_gated_delta_decode",
+           [](TritonOpBuilder &self, mlir::Value &q, mlir::Value &k,
+              mlir::Value &v, mlir::Value &g, mlir::Value &beta,
+              mlir::Value &state, mlir::Value &out,
+              mlir::Value &B, mlir::Value &H,
+              mlir::Value &k_dim, mlir::Value &v_dim,
+              mlir::Value &use_l2norm) {
+             self.create<CpuGatedDeltaDecodeOp>(
+                 q, k, v, g, beta, state, out,
+                 B, H, k_dim, v_dim, use_l2norm);
+           })
       .def("create_cpu_swiglu",
            [](TritonOpBuilder &self, mlir::Value &gate, mlir::Value &up,
               mlir::Value &out, mlir::Value &N) {
