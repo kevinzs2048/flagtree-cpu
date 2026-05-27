@@ -208,6 +208,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
   list(APPEND TRITON_PLUGIN_NAMES "proton")
   add_subdirectory(third_party/proton/dialect)
 
+  # TLE-ARM64 plugin (symlinked from flagtree/third_party/tle_arm64)
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tle_arm64/CMakeLists.txt)
+    list(APPEND TRITON_PLUGIN_NAMES "tle_arm64")
+    add_subdirectory(third_party/tle_arm64)
+  endif()
+
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
   set(TRITON_LIBRARIES
