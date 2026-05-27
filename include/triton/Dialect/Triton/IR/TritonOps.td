@@ -886,6 +886,45 @@ def TT_CpuFlashAttnDecodeOp : TT_Op<"cpu_flash_attn_decode", []> {
 //
 // TLE-CPU: RMSNorm (out = x / rms(x) * weight)
 //
+//
+// TLE-CPU: RMSNormGated (rms_norm(x) * weight * silu(gate)) — multi-row.
+//
+def TT_CpuRmsNormGatedOp : TT_Op<"cpu_rms_norm_gated", []> {
+    let summary = "TLE-CPU: RMSNormGated multi-row (norm + silu-gate fused)";
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$gate_ptr, TT_Ptr:$weight_ptr,
+                         TT_Ptr:$out_ptr, I64:$M, I64:$D, F32Attr:$eps);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $gate_ptr `,` $weight_ptr `,` $out_ptr `,` $M `,` $D attr-dict `:` type($x_ptr) `,` type($gate_ptr) `,` type($weight_ptr) `,` type($out_ptr)";
+}
+
+//
+// TLE-CPU: Fused SwiGLU on Q4_0 v2 weights (gate + up SDOT GEMV + silu(gate) * up).
+// Replaces the 5-op ATen MLP first-half (gate_proj, up_proj, silu, mul, alloc/free)
+// with a single dispatch. K, N: dimensions; require K % 32 == 0, N % 4 == 0.
+//
+def TT_CpuFusedSwigluQ40V2Op : TT_Op<"cpu_fused_swiglu_q4_0_v2", []> {
+    let summary = "TLE-CPU: Fused SwiGLU (gate+up Q4_0 v2 GEMV + silu*mul)";
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$gate_packed_ptr,
+                         TT_Ptr:$up_packed_ptr, TT_Ptr:$out_ptr,
+                         I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $gate_packed_ptr `,` $up_packed_ptr `,` $out_ptr `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($gate_packed_ptr) `,` type($up_packed_ptr) `,` type($out_ptr)";
+}
+
+//
+// TLE-CPU: KleidiAI Q4 GEMV decode (M=1, BF16). Uses Arm KleidiAI's
+// hand-tuned 8-N grouped pack assembly kernel via libTritonCPURuntime
+// wrapper kleidi_q4_gemv_bf16. Weights must be pre-packed via the
+// kleidi_pack_q4_weights helper.
+//
+def TT_CpuKleidiQ4GemvBf16Op : TT_Op<"cpu_kleidi_q4_gemv_bf16", []> {
+    let summary = "TLE-CPU: KleidiAI 8-N Q4_0 GEMV decode (M=1, BF16)";
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$rhs_packed_ptr,
+                         TT_Ptr:$out_ptr, I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $rhs_packed_ptr `,` $out_ptr `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($rhs_packed_ptr) `,` type($out_ptr)";
+}
+
 def TT_CpuRmsNormOp : TT_Op<"cpu_rms_norm", []> {
     let summary = "TLE-CPU: RMSNorm (x / rms(x) * weight)";
     let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$weight_ptr, TT_Ptr:$out_ptr, I64:$D, F32Attr:$eps);
@@ -910,6 +949,73 @@ def TT_CpuCausalConv1dUpdateOp : TT_Op<"cpu_causal_conv1d_update", []> {
                          I64:$silu, I64:$has_bias);
     let results = (outs);
     let assemblyFormat = "$hidden_ptr `,` $state_ptr `,` $weight_ptr `,` $bias_ptr `,` $out_ptr `,` $B `,` $C `,` $kernel_size `,` $silu `,` $has_bias attr-dict `:` type($hidden_ptr) `,` type($state_ptr) `,` type($weight_ptr) `,` type($bias_ptr) `,` type($out_ptr)";
+}
+
+//
+// TLE-CPU: W4A8 SDOT GEMV (per-channel symmetric W4, dynamic per-token A8, bf16 in/out)
+//
+//
+// TLE-CPU: Q4_0-style W4A8 SDOT GEMV (per-block-32 W4 with fp16 scale per
+// block per output channel; per-token A8). Mirrors llama.cpp Q4_0 layout
+// for accuracy on outlier-heavy weights.
+//
+//
+// TLE-CPU: Q4_0 v2 SDOT GEMV (llama.cpp-style layout — K-major per N row,
+// 16 bytes nibbles + 2 bytes fp16 scale per (N, K_block_32))
+//
+//
+// TLE-CPU: Q4_0 v2 SMMLA prefill GEMM (M >= 2). Pairs M and N into 2x2
+// SMMLA tiles, on-the-fly Q4_0 unpack.
+//
+def TT_CpuGemmQ40V2SmmlaBf16Op : TT_Op<"cpu_gemm_q4_0_v2_smmla_bf16", []> {
+    let summary = "TLE-CPU: Q4_0 v2 SMMLA i8mm prefill GEMM";
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$w_packed_ptr,
+                         TT_Ptr:$out_ptr, I64:$M, I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $w_packed_ptr `,` $out_ptr `,` $M `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($w_packed_ptr) `,` type($out_ptr)";
+}
+
+def TT_CpuSdotGemvQ40V2Bf16Op : TT_Op<"cpu_sdot_gemv_q4_0_v2_bf16", []> {
+    let summary = "TLE-CPU: Q4_0 v2 SDOT GEMV (llama.cpp-style per-N K-major layout)";
+    let description = [{
+      x_ptr: [K] bf16; w_packed_ptr: [N × K/32 × 18] int8 (16 bytes nibbles + 2 bytes
+      fp16 scale per K-block-32 per output channel); out_ptr: [N] bf16. K must be
+      a multiple of 32. Activation is dynamically int8-quantized per-token inside
+      the kernel.
+    }];
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$w_packed_ptr,
+                         TT_Ptr:$out_ptr, I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $w_packed_ptr `,` $out_ptr `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($w_packed_ptr) `,` type($out_ptr)";
+}
+
+def TT_CpuSdotGemvQ40Bf16Op : TT_Op<"cpu_sdot_gemv_q4_0_bf16", []> {
+    let summary = "TLE-CPU: Q4_0-style W4A8 SDOT GEMV (per-block-32 fp16 scale)";
+    let description = [{
+      x_ptr: [K] bf16; b_packed_ptr: [K/4, N/4, 4, 2] int8 (16 i4 weights / 8 bytes per (kb, nb) block);
+      block_scales_ptr: [K/32, N] fp16 (one fp16 scale per K-block-32 per output channel);
+      out_ptr: [N] bf16. K must be a multiple of 32, N a multiple of 4.
+    }];
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$b_packed_ptr,
+                         TT_Ptr:$block_scales_ptr, TT_Ptr:$out_ptr,
+                         I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $b_packed_ptr `,` $block_scales_ptr `,` $out_ptr `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($b_packed_ptr) `,` type($block_scales_ptr) `,` type($out_ptr)";
+}
+
+def TT_CpuSdotGemvW4A8Bf16Op : TT_Op<"cpu_sdot_gemv_w4a8_bf16", []> {
+    let summary = "TLE-CPU: W4A8 SDOT GEMV with on-the-fly W4 unpack";
+    let description = [{
+      Decode-path GEMV using NEON SDOT with 4-bit packed weights.
+      x_ptr: [K] bf16; b_packed_ptr: [K/4, N/4, 4, 2] int8 (16 i4 weights / 8 bytes per block);
+      w_scale_ptr: [N] fp32; out_ptr: [N] bf16. Activation is dynamically int8-quantized
+      per-token inside the kernel.
+    }];
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$b_packed_ptr,
+                         TT_Ptr:$w_scale_ptr, TT_Ptr:$out_ptr,
+                         I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $b_packed_ptr `,` $w_scale_ptr `,` $out_ptr `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($b_packed_ptr) `,` type($w_scale_ptr) `,` type($out_ptr)";
 }
 
 def TT_CpuGatedDeltaDecodeOp : TT_Op<"cpu_gated_delta_decode", []> {

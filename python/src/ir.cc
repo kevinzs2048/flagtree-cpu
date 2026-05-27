@@ -1652,6 +1652,28 @@ void init_triton_ir(py::module &&m) {
                  x, weight, out, D,
                  self.getBuilder().getF32FloatAttr(eps));
            })
+      .def("create_cpu_rms_norm_gated",
+           [](TritonOpBuilder &self, mlir::Value &x, mlir::Value &gate,
+              mlir::Value &weight, mlir::Value &out,
+              mlir::Value &M, mlir::Value &D, float eps) {
+             self.create<CpuRmsNormGatedOp>(
+                 x, gate, weight, out, M, D,
+                 self.getBuilder().getF32FloatAttr(eps));
+           })
+      .def("create_cpu_fused_swiglu_q4_0_v2",
+           [](TritonOpBuilder &self, mlir::Value &x_ptr,
+              mlir::Value &gate_packed, mlir::Value &up_packed,
+              mlir::Value &out_ptr, mlir::Value &K, mlir::Value &N) {
+             self.create<CpuFusedSwigluQ40V2Op>(
+                 x_ptr, gate_packed, up_packed, out_ptr, K, N);
+           })
+      .def("create_cpu_kleidi_q4_gemv_bf16",
+           [](TritonOpBuilder &self, mlir::Value &x_ptr,
+              mlir::Value &rhs_packed, mlir::Value &out_ptr,
+              mlir::Value &K, mlir::Value &N) {
+             self.create<CpuKleidiQ4GemvBf16Op>(
+                 x_ptr, rhs_packed, out_ptr, K, N);
+           })
       .def("create_cpu_causal_conv1d_update",
            [](TritonOpBuilder &self, mlir::Value &hidden, mlir::Value &state,
               mlir::Value &weight, mlir::Value &bias, mlir::Value &out,
@@ -1661,6 +1683,34 @@ void init_triton_ir(py::module &&m) {
              self.create<CpuCausalConv1dUpdateOp>(
                  hidden, state, weight, bias, out, B, C, kernel_size,
                  silu, has_bias);
+           })
+      .def("create_cpu_gemm_q4_0_v2_smmla_bf16",
+           [](TritonOpBuilder &self, mlir::Value &x_ptr,
+              mlir::Value &w_packed_ptr, mlir::Value &out_ptr,
+              mlir::Value &M, mlir::Value &K, mlir::Value &N) {
+             self.create<CpuGemmQ40V2SmmlaBf16Op>(
+                 x_ptr, w_packed_ptr, out_ptr, M, K, N);
+           })
+      .def("create_cpu_sdot_gemv_q4_0_v2_bf16",
+           [](TritonOpBuilder &self, mlir::Value &x_ptr,
+              mlir::Value &w_packed_ptr, mlir::Value &out_ptr,
+              mlir::Value &K, mlir::Value &N) {
+             self.create<CpuSdotGemvQ40V2Bf16Op>(
+                 x_ptr, w_packed_ptr, out_ptr, K, N);
+           })
+      .def("create_cpu_sdot_gemv_q4_0_bf16",
+           [](TritonOpBuilder &self, mlir::Value &x_ptr,
+              mlir::Value &b_packed_ptr, mlir::Value &block_scales_ptr,
+              mlir::Value &out_ptr, mlir::Value &K, mlir::Value &N) {
+             self.create<CpuSdotGemvQ40Bf16Op>(
+                 x_ptr, b_packed_ptr, block_scales_ptr, out_ptr, K, N);
+           })
+      .def("create_cpu_sdot_gemv_w4a8_bf16",
+           [](TritonOpBuilder &self, mlir::Value &x_ptr,
+              mlir::Value &b_packed_ptr, mlir::Value &w_scale_ptr,
+              mlir::Value &out_ptr, mlir::Value &K, mlir::Value &N) {
+             self.create<CpuSdotGemvW4A8Bf16Op>(
+                 x_ptr, b_packed_ptr, w_scale_ptr, out_ptr, K, N);
            })
       .def("create_cpu_gated_delta_decode",
            [](TritonOpBuilder &self, mlir::Value &q, mlir::Value &k,

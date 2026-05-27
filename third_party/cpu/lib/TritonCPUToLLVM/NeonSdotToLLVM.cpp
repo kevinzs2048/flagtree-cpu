@@ -300,6 +300,177 @@ struct SdotGemvFusedBf16OpLowering
   }
 };
 
+// ---------- CpuGemmQ40V2SmmlaBf16Op → runtime call ----------
+
+struct GemmQ40V2SmmlaBf16OpLowering
+    : public OpRewritePattern<triton::CpuGemmQ40V2SmmlaBf16Op> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::CpuGemmQ40V2SmmlaBf16Op op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    auto module = op->getParentOfType<ModuleOp>();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    auto funcName = "sdot_gemm_q4_0_v2_smmla_bf16";
+    auto funcOp = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
+    if (!funcOp) {
+      auto voidTy = LLVM::LLVMVoidType::get(ctx);
+      auto funcType = LLVM::LLVMFunctionType::get(
+          voidTy, {ptrTy, ptrTy, ptrTy, i64Ty, i64Ty, i64Ty}, false);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      funcOp = rewriter.create<LLVM::LLVMFuncOp>(
+          UnknownLoc::get(ctx), funcName, funcType);
+    }
+
+    auto castPtr = [&](Value v) -> Value {
+      if (isa<LLVM::LLVMPointerType>(v.getType())) return v;
+      return rewriter.create<UnrealizedConversionCastOp>(loc, ptrTy, v)
+          .getResult(0);
+    };
+
+    rewriter.create<LLVM::CallOp>(
+        loc, funcOp,
+        ValueRange{castPtr(op.getXPtr()), castPtr(op.getWPackedPtr()),
+                   castPtr(op.getOutPtr()),
+                   op.getM(), op.getK(), op.getN()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// ---------- CpuSdotGemvQ40V2Bf16Op → runtime call ----------
+
+struct SdotGemvQ40V2Bf16OpLowering
+    : public OpRewritePattern<triton::CpuSdotGemvQ40V2Bf16Op> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::CpuSdotGemvQ40V2Bf16Op op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    auto module = op->getParentOfType<ModuleOp>();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    auto funcName = "sdot_gemv_m1_q4_0_v2_fused_bf16";
+    auto funcOp = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
+    if (!funcOp) {
+      auto voidTy = LLVM::LLVMVoidType::get(ctx);
+      // 5 args: x_bf16, W_packed, out_bf16, K, N
+      auto funcType = LLVM::LLVMFunctionType::get(
+          voidTy, {ptrTy, ptrTy, ptrTy, i64Ty, i64Ty}, false);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      funcOp = rewriter.create<LLVM::LLVMFuncOp>(
+          UnknownLoc::get(ctx), funcName, funcType);
+    }
+
+    auto castPtr = [&](Value v) -> Value {
+      if (isa<LLVM::LLVMPointerType>(v.getType())) return v;
+      return rewriter.create<UnrealizedConversionCastOp>(loc, ptrTy, v)
+          .getResult(0);
+    };
+
+    rewriter.create<LLVM::CallOp>(
+        loc, funcOp,
+        ValueRange{castPtr(op.getXPtr()), castPtr(op.getWPackedPtr()),
+                   castPtr(op.getOutPtr()),
+                   op.getK(), op.getN()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// ---------- CpuSdotGemvQ40Bf16Op → runtime call ----------
+
+struct SdotGemvQ40Bf16OpLowering
+    : public OpRewritePattern<triton::CpuSdotGemvQ40Bf16Op> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::CpuSdotGemvQ40Bf16Op op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    auto module = op->getParentOfType<ModuleOp>();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    auto funcName = "sdot_gemv_m1_q4_0_fused_bf16";
+    auto funcOp = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
+    if (!funcOp) {
+      auto voidTy = LLVM::LLVMVoidType::get(ctx);
+      // 6 args: x_bf16, B_w4, block_scales_fp16, out_bf16, K, N
+      auto funcType = LLVM::LLVMFunctionType::get(
+          voidTy, {ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty}, false);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      funcOp = rewriter.create<LLVM::LLVMFuncOp>(
+          UnknownLoc::get(ctx), funcName, funcType);
+    }
+
+    auto castPtr = [&](Value v) -> Value {
+      if (isa<LLVM::LLVMPointerType>(v.getType())) return v;
+      return rewriter.create<UnrealizedConversionCastOp>(loc, ptrTy, v)
+          .getResult(0);
+    };
+
+    rewriter.create<LLVM::CallOp>(
+        loc, funcOp,
+        ValueRange{castPtr(op.getXPtr()), castPtr(op.getBPackedPtr()),
+                   castPtr(op.getBlockScalesPtr()), castPtr(op.getOutPtr()),
+                   op.getK(), op.getN()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// ---------- CpuSdotGemvW4A8Bf16Op → runtime call ----------
+
+struct SdotGemvW4A8Bf16OpLowering
+    : public OpRewritePattern<triton::CpuSdotGemvW4A8Bf16Op> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::CpuSdotGemvW4A8Bf16Op op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    auto module = op->getParentOfType<ModuleOp>();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    auto funcName = "sdot_gemv_m1_w4_fused_bf16";
+    auto funcOp = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
+    if (!funcOp) {
+      auto voidTy = LLVM::LLVMVoidType::get(ctx);
+      // 6 args: x_bf16, B_w4, w_scale, out_bf16, K, N
+      auto funcType = LLVM::LLVMFunctionType::get(
+          voidTy, {ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty}, false);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      funcOp = rewriter.create<LLVM::LLVMFuncOp>(
+          UnknownLoc::get(ctx), funcName, funcType);
+    }
+
+    auto castPtr = [&](Value v) -> Value {
+      if (isa<LLVM::LLVMPointerType>(v.getType())) return v;
+      return rewriter.create<UnrealizedConversionCastOp>(loc, ptrTy, v)
+          .getResult(0);
+    };
+
+    rewriter.create<LLVM::CallOp>(
+        loc, funcOp,
+        ValueRange{castPtr(op.getXPtr()), castPtr(op.getBPackedPtr()),
+                   castPtr(op.getWScalePtr()), castPtr(op.getOutPtr()),
+                   op.getK(), op.getN()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 // ---------- CpuSdotPackWeightsOp → runtime call ----------
 
 struct SdotPackWeightsOpLowering
@@ -431,6 +602,134 @@ struct FlashAttnDecodeOpLowering
                    op.getSeqLen(), op.getHeadDim(), smScaleVal,
                    op.getNumHeads(), op.getNumKvHeads(),
                    op.getStrideKn(), op.getStrideVn()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// ---------- CpuRmsNormGatedOp → runtime call ----------
+
+struct RmsNormGatedOpLowering
+    : public OpRewritePattern<triton::CpuRmsNormGatedOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::CpuRmsNormGatedOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    auto module = op->getParentOfType<ModuleOp>();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto f32Ty = Float32Type::get(ctx);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    auto funcName = "standalone_rms_norm_gated_bf16";
+    auto funcOp = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
+    if (!funcOp) {
+      auto voidTy = LLVM::LLVMVoidType::get(ctx);
+      auto funcType = LLVM::LLVMFunctionType::get(
+          voidTy, {ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty, f32Ty}, false);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      funcOp = rewriter.create<LLVM::LLVMFuncOp>(
+          UnknownLoc::get(ctx), funcName, funcType);
+    }
+
+    auto castPtr = [&](Value v) -> Value {
+      if (isa<LLVM::LLVMPointerType>(v.getType())) return v;
+      return rewriter.create<UnrealizedConversionCastOp>(loc, ptrTy, v)
+          .getResult(0);
+    };
+    auto epsVal = rewriter.create<LLVM::ConstantOp>(
+        loc, f32Ty, op.getEpsAttr());
+
+    rewriter.create<LLVM::CallOp>(
+        loc, funcOp,
+        ValueRange{castPtr(op.getXPtr()), castPtr(op.getGatePtr()),
+                   castPtr(op.getWeightPtr()), castPtr(op.getOutPtr()),
+                   op.getM(), op.getD(), epsVal});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// ---------- CpuKleidiQ4GemvBf16Op → runtime call ----------
+
+struct KleidiQ4GemvBf16OpLowering
+    : public OpRewritePattern<triton::CpuKleidiQ4GemvBf16Op> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::CpuKleidiQ4GemvBf16Op op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    auto module = op->getParentOfType<ModuleOp>();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    auto funcName = "kleidi_q4_gemv_bf16";
+    auto funcOp = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
+    if (!funcOp) {
+      auto voidTy = LLVM::LLVMVoidType::get(ctx);
+      auto funcType = LLVM::LLVMFunctionType::get(
+          voidTy, {ptrTy, ptrTy, ptrTy, i64Ty, i64Ty}, false);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      funcOp = rewriter.create<LLVM::LLVMFuncOp>(
+          UnknownLoc::get(ctx), funcName, funcType);
+    }
+
+    auto castPtr = [&](Value v) -> Value {
+      if (isa<LLVM::LLVMPointerType>(v.getType())) return v;
+      return rewriter.create<UnrealizedConversionCastOp>(loc, ptrTy, v)
+          .getResult(0);
+    };
+
+    rewriter.create<LLVM::CallOp>(
+        loc, funcOp,
+        ValueRange{castPtr(op.getXPtr()), castPtr(op.getRhsPackedPtr()),
+                   castPtr(op.getOutPtr()), op.getK(), op.getN()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// ---------- CpuFusedSwigluQ40V2Op → runtime call ----------
+
+struct FusedSwigluQ40V2OpLowering
+    : public OpRewritePattern<triton::CpuFusedSwigluQ40V2Op> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::CpuFusedSwigluQ40V2Op op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto ctx = rewriter.getContext();
+    auto module = op->getParentOfType<ModuleOp>();
+    auto i64Ty = IntegerType::get(ctx, 64);
+    auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+    auto funcName = "fused_swiglu_q4_0_v2_bf16";
+    auto funcOp = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName);
+    if (!funcOp) {
+      auto voidTy = LLVM::LLVMVoidType::get(ctx);
+      auto funcType = LLVM::LLVMFunctionType::get(
+          voidTy, {ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty}, false);
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(module.getBody());
+      funcOp = rewriter.create<LLVM::LLVMFuncOp>(
+          UnknownLoc::get(ctx), funcName, funcType);
+    }
+
+    auto castPtr = [&](Value v) -> Value {
+      if (isa<LLVM::LLVMPointerType>(v.getType())) return v;
+      return rewriter.create<UnrealizedConversionCastOp>(loc, ptrTy, v)
+          .getResult(0);
+    };
+
+    rewriter.create<LLVM::CallOp>(
+        loc, funcOp,
+        ValueRange{castPtr(op.getXPtr()), castPtr(op.getGatePackedPtr()),
+                   castPtr(op.getUpPackedPtr()), castPtr(op.getOutPtr()),
+                   op.getK(), op.getN()});
     rewriter.eraseOp(op);
     return success();
   }
@@ -651,8 +950,15 @@ std::unique_ptr<Pass> createNeonSdotToLLVMPass() {
       patterns.add<NeonSdotOpLowering>(ctx);
       patterns.add<SdotGemvOpLowering>(ctx);
       patterns.add<SdotGemvFusedBf16OpLowering>(ctx);
+      patterns.add<SdotGemvW4A8Bf16OpLowering>(ctx);
+      patterns.add<SdotGemvQ40Bf16OpLowering>(ctx);
+      patterns.add<SdotGemvQ40V2Bf16OpLowering>(ctx);
+      patterns.add<GemmQ40V2SmmlaBf16OpLowering>(ctx);
       patterns.add<SdotPackWeightsOpLowering>(ctx);
       patterns.add<RmsNormOpLowering>(ctx);
+      patterns.add<RmsNormGatedOpLowering>(ctx);
+      patterns.add<FusedSwigluQ40V2OpLowering>(ctx);
+      patterns.add<KleidiQ4GemvBf16OpLowering>(ctx);
       patterns.add<GatedDeltaDecodeOpLowering>(ctx);
       patterns.add<CausalConv1dUpdateOpLowering>(ctx);
       patterns.add<SwigluOpLowering>(ctx);

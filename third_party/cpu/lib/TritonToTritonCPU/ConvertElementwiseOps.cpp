@@ -64,8 +64,15 @@ public:
     // TLE-CPU ops pass through to LLVM lowering (pointer+scalar args only)
     addLegalOp<triton::CpuSdotGemvOp>();
     addLegalOp<triton::CpuSdotGemvFusedBf16Op>();
+    addLegalOp<triton::CpuSdotGemvW4A8Bf16Op>();
+    addLegalOp<triton::CpuSdotGemvQ40Bf16Op>();
+    addLegalOp<triton::CpuSdotGemvQ40V2Bf16Op>();
+    addLegalOp<triton::CpuGemmQ40V2SmmlaBf16Op>();
     addLegalOp<triton::CpuSdotPackWeightsOp>();
     addLegalOp<triton::CpuRmsNormOp>();
+    addLegalOp<triton::CpuRmsNormGatedOp>();
+    addLegalOp<triton::CpuFusedSwigluQ40V2Op>();
+    addLegalOp<triton::CpuKleidiQ4GemvBf16Op>();
     addLegalOp<triton::CpuGatedDeltaDecodeOp>();
     addLegalOp<triton::CpuCausalConv1dUpdateOp>();
     addLegalOp<triton::CpuSwigluOp>();
