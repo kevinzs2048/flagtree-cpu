@@ -84,7 +84,8 @@ endif()
 # Compiler flags
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 if(NOT MSVC)
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS  -fPIC -std=gnu++17")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS  -fPIC -std=gnu++17 -march=armv9-a+sve2+i8mm+bf16+fp16+dotprod -msve-vector-bits=128")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D__STDC_FORMAT_MACROS -fPIC -march=armv9-a+sve2+i8mm+bf16+fp16+dotprod -msve-vector-bits=128")
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D__STDC_FORMAT_MACROS")
 endif()
@@ -207,6 +208,12 @@ if(TRITON_BUILD_PYTHON_MODULE)
   list(APPEND TRITON_PLUGIN_NAMES "proton")
   add_subdirectory(third_party/proton/dialect)
 
+  # TLE-ARM64 plugin (symlinked from flagtree/third_party/tle_arm64)
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tle_arm64/CMakeLists.txt)
+    list(APPEND TRITON_PLUGIN_NAMES "tle_arm64")
+    add_subdirectory(third_party/tle_arm64)
+  endif()
+
   get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
   get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
   set(TRITON_LIBRARIES
@@ -322,10 +329,10 @@ endif()
 find_package(Threads REQUIRED)
 
 add_subdirectory(third_party/f2reduce)
-add_subdirectory(bin)
-add_subdirectory(test)
 
 if(TRITON_BUILD_UT)
+  add_subdirectory(bin)
+  add_subdirectory(test)
   add_subdirectory(unittest)
   # This target runs all the unit tests.
   add_custom_target(check-triton-unit-tests
