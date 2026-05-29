@@ -1,36 +1,13 @@
-import contextlib
-import sys
-import platform
-import io
 import sysconfig
 import os
 import shutil
 import subprocess
+import platform
+import re
 
 
-@contextlib.contextmanager
-def quiet():
-    old_stdout, old_stderr = sys.stdout, sys.stderr
-    sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
-    try:
-        yield
-    finally:
-        sys.stdout, sys.stderr = old_stdout, old_stderr
-
-
-def _is_apple_clang():
-    if platform.system() != "Darwin":
-        return False
-    res = subprocess.run(["clang", "--version"], capture_output=True, text=True)
-    if res.returncode != 0:
-        return False
-    return "Apple clang" in res.stdout
-
-
-def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
+def _build(name, src, srcdir, library_dirs, include_dirs, libraries, extra_objects=None):
     suffix = sysconfig.get_config_var('EXT_SUFFIX')
-    system = platform.system()
-    machine = platform.machine()
     so = os.path.join(srcdir, '{name}{suffix}'.format(name=name, suffix=suffix))
     # try to avoid setuptools if possible
     cc = os.environ.get("CC")
@@ -55,44 +32,64 @@ def _build(name, src, srcdir, library_dirs, include_dirs, libraries):
     include_dirs = include_dirs + [srcdir, py_include_dir, *custom_backend_dirs]
     # for -Wno-psabi, see https://gcc.gnu.org/bugzilla/show_bug.cgi?id=111047
     cc_cmd = [cc, src, "-O3", "-shared", "-fPIC", "-Wno-psabi", "-o", so]
+    # Add architecture-specific flags for ARM
+    machine = platform.machine()
+    if src.endswith(".s") and machine in ("aarch64", "arm64"):
+        # Explicitly enable SVE2+i8mm+bf16+fp16 for kernel assembly
+        cc_cmd += [
+            "-march=armv9-a+sve2+i8mm+bf16+fp16",
+            "-msve-vector-bits=128",
+        ]
 
-    libraries += ["gcc"]
-    # Use dynamic lookup to load Python library on Mac
-    if system == "Darwin":
-        cc_cmd += ["-undefined", "dynamic_lookup"]
-        # Don't use libgcc on clang + macos
-        if "clang" in cc:
-            libraries.remove("gcc")
+    # Enable OpenMP for C++ launcher files so that run_omp_kernels parallelizes
+    # grid blocks across OMP threads (controlled by OMP_NUM_THREADS env var).
+    if src.endswith(".cpp"):
+        cc_cmd += ["-fopenmp"]
+        # Link against the same libgomp that PyTorch uses
+        torch_lib_dir = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "torch", "lib")
+        if os.path.isdir(torch_lib_dir):
+            cc_cmd += [f"-L{torch_lib_dir}", "-lgomp",
+                       f"-Wl,-rpath,{torch_lib_dir}"]
+        else:
+            cc_cmd += ["-lgomp"]
+
+    # Fix assembly for GCC compatibility
+    # LLVM generates DWARF debug info that GCC assembler doesn't understand
+    # Remove .file and .loc directives, and fix escaped characters
+    if src.endswith('.s'):
+        with open(src, 'r') as f:
+            asm_content = f.read()
+        # Replace problematic .file directives with a simple one
+        # LLVM generates: .file N "directory" "filename" or .file N "filename"
+        # Replace all with a single valid .file directive
+        lines = asm_content.split('\n')
+        new_lines = []
+        for line in lines:
+            # Skip .file directives (they cause GCC assembler issues)
+            if line.strip().startswith('.file\t'):
+                continue
+            # Skip .loc directives (they reference .file numbers)
+            if line.strip().startswith('.loc\t'):
+                continue
+            # Skip .cfi_* directives
+            if line.strip().startswith('.cfi_'):
+                continue
+            # Fix escaped tab characters
+            line = line.replace("'\\t", "\t")
+            new_lines.append(line)
+        # Remove multiple empty lines
+        asm_content = '\n'.join(new_lines)
+        asm_content = re.sub(r'\n\s*\n\s*\n', '\n\n', asm_content)
+        with open(src, 'w') as f:
+            f.write(asm_content)
+
     cc_cmd += [f'-l{lib}' for lib in libraries]
     cc_cmd += [f"-L{dir}" for dir in library_dirs]
     cc_cmd += [f"-I{dir}" for dir in include_dirs if dir is not None]
-    for dir in library_dirs:
-        cc_cmd.extend(["-Wl,-rpath", dir])
-    # CPU backend uses C++ (driver.cpp). Some old version compilers need a specific C++17 flag.
-    if src.endswith(".cpp") or src.endswith(".cc"):
-        cc_cmd += ["-std=c++17"]
-        if not os.environ.get("TRITON_DISABLE_OPENMP", None):
-            libomp_path = os.environ.get("TRITON_LOCAL_LIBOMP_PATH", None)
-            if _is_apple_clang():
-                if libomp_path:
-                    cc_cmd += ["-Xclang"]
-                    cc_cmd += ["-fopenmp"]
-                    cc_cmd += [f"-I{libomp_path}/include"]
-                    cc_cmd += [f"-L{libomp_path}/lib"]
-                    cc_cmd += ["-lomp"]
-                else:
-                    print("Warning: TRITON_LOCAL_LIBOMP_PATH is not set for Apple clang. OpenMP is disabled.")
-            else:
-                cc_cmd += ["-fopenmp"]
-                if libomp_path:
-                    print("Info: Ignoring TRITON_LOCAL_LIBOMP_PATH for non-Apple clang compiler")
-    if src.endswith(".s"):
-        # This is required to properly parse .file directives
-        cc_cmd += ["-g"]
-        if system == "Linux" and machine in ("aarch64", "arm64"):
-            # On Arm backend, some CPU (neoverse-v2) needs to be specified through -mcpu
-            cc_cmd += ["-mcpu=native"]
-    ret = subprocess.check_call(cc_cmd)
-    if ret != 0:
-        raise RuntimeError("Failed to compile so.")
+    # Link extra object files (TLE CPU NEON extensions)
+    if extra_objects:
+        cc_cmd += ["-fopenmp"]  # TLE NEON .o files use OpenMP
+        cc_cmd += list(extra_objects)
+    subprocess.check_call(cc_cmd, stdout=subprocess.DEVNULL)
     return so

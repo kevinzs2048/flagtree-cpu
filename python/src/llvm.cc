@@ -61,7 +61,7 @@ createTargetMachine(llvm::Module *module, std::string proc,
                     bool enable_fast_math = false) {
   std::string error;
   auto target = llvm::TargetRegistry::lookupTarget(
-      module->getTargetTriple().str(), error);
+      module->getTargetTriple(), error);
   if (!target) {
     // Try to get the default target triple.
     auto triple = getDefaultTargerOrProcessTriple();
@@ -69,7 +69,7 @@ createTargetMachine(llvm::Module *module, std::string proc,
     if (!target) {
       throw std::runtime_error("target lookup error: " + error);
     }
-    module->setTargetTriple(Triple(triple));
+    module->setTargetTriple(triple);
   }
   llvm::TargetOptions opt;
   bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
@@ -164,7 +164,7 @@ std::string translateLLVMIRToASM(
   // module->print(llvm::outs(), nullptr);
 
   // create machine
-  module.setTargetTriple(Triple(triple));
+  module.setTargetTriple(triple);
   auto machine = createTargetMachine(&module, proc, enable_fp_fusion, features,
                                      enable_fast_math);
   // set data layout
@@ -315,7 +315,7 @@ void init_triton_llvm(py::module &&m) {
     llvm::TargetOptions opt;
     // Target machine is only used to create the data layout.
     std::unique_ptr<llvm::TargetMachine> machine{target->createTargetMachine(
-        llvm::Triple(triple), proc, features, opt, llvm::Reloc::PIC_,
+        triple, proc, features, opt, llvm::Reloc::PIC_,
         std::nullopt, llvm::CodeGenOptLevel::None)};
     // set data layout
     mod->setDataLayout(machine->createDataLayout());
@@ -443,10 +443,10 @@ void init_triton_llvm(py::module &&m) {
 
   m.def("set_host_target", [](llvm::Module *mod) {
     auto triple = getDefaultTargerOrProcessTriple();
-    mod->setTargetTriple(Triple(triple));
+    mod->setTargetTriple(triple);
     std::string error;
     auto target =
-        llvm::TargetRegistry::lookupTarget(mod->getTargetTriple().str(), error);
+        llvm::TargetRegistry::lookupTarget(mod->getTargetTriple(), error);
     if (!target) {
       throw std::runtime_error("target lookup error: " + error);
     }
@@ -567,7 +567,7 @@ void init_triton_llvm(py::module &&m) {
         std::string message = "Failed to parse library at " + path;
         throw std::invalid_argument(message);
       }
-      libMod->setTargetTriple(Triple(dstMod->getTargetTriple()));
+      libMod->setTargetTriple(dstMod->getTargetTriple());
       libMod->setDataLayout(dstMod->getDataLayout());
 
       std::unordered_set<std::string> externalFns;

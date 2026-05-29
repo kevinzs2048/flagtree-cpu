@@ -583,7 +583,8 @@ download_and_copy(
     f"https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/{system}-{arch}/cuda_cupti-{system}-{arch}-{version}-archive.tar.xz",
 )
 
-backends = [*BackendInstaller.copy(["nvidia", "amd", "cpu"]), *BackendInstaller.copy_externals()]
+_active_backends = os.getenv("TRITON_BUILD_BACKENDS", "nvidia;amd;cpu").split(";")
+backends = [*BackendInstaller.copy(_active_backends), *BackendInstaller.copy_externals()]
 
 
 def add_link_to_backends():
