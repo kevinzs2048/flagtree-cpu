@@ -63,5 +63,61 @@ SYM(sme_tile_16x64):
     ret
 #ifndef __APPLE__
 .size sme_tile_16x64, . - sme_tile_16x64
+#endif
+
+// void sme_tile_16x64_bf16(const uint16_t* Ap, const uint16_t* Bp, float* C, int64_t K2, int64_t ldc_elems)
+//   Ap:[K2][16][2] bf16   Bp:[K2][4][16][2] bf16   C: f32 tile, rows strided by ldc_elems
+//   bf16 BFMOPA -> f32 ZA accumulate, NO quantization. Same 64/256 advances + f32
+//   store as the int8 kernel (a z vector is 64 bytes regardless of elem type).
+//   x0=Ap x1=Bp x2=C x3=K2 x4=ldc_elems
+.globl SYM(sme_tile_16x64_bf16)
+#ifndef __APPLE__
+.type sme_tile_16x64_bf16, %function
+#endif
+.p2align 2
+SYM(sme_tile_16x64_bf16):
+    stp     d8,  d9,  [sp, #-64]!
+    stp     d10, d11, [sp, #16]
+    stp     d12, d13, [sp, #32]
+    stp     d14, d15, [sp, #48]
+    smstart
+    ptrue   p0.b
+    zero    {za}
+    lsl     x4, x4, #2          // ldc bytes = ldc_elems*4 (f32)
+    cbz     x3, 5f
+    mov     x7, x3
+4:  ld1h    {z0.h}, p0/z, [x0]
+    ld1h    {z1.h}, p0/z, [x1]
+    ld1h    {z2.h}, p0/z, [x1, #1, mul vl]
+    ld1h    {z3.h}, p0/z, [x1, #2, mul vl]
+    ld1h    {z4.h}, p0/z, [x1, #3, mul vl]
+    bfmopa  za0.s, p0/m, p0/m, z0.h, z1.h
+    bfmopa  za1.s, p0/m, p0/m, z0.h, z2.h
+    bfmopa  za2.s, p0/m, p0/m, z0.h, z3.h
+    bfmopa  za3.s, p0/m, p0/m, z0.h, z4.h
+    add     x0, x0, #64
+    add     x1, x1, #256
+    subs    x7, x7, #1
+    b.ne    4b
+5:  mov     w12, #0
+    mov     x9,  #16
+    mov     x10, #32
+    mov     x11, #48
+6:  st1w    {za0h.s[w12, 0]}, p0, [x2]
+    st1w    {za1h.s[w12, 0]}, p0, [x2, x9,  lsl #2]
+    st1w    {za2h.s[w12, 0]}, p0, [x2, x10, lsl #2]
+    st1w    {za3h.s[w12, 0]}, p0, [x2, x11, lsl #2]
+    add     x2, x2, x4
+    add     w12, w12, #1
+    cmp     w12, #16
+    b.ne    6b
+    smstop
+    ldp     d10, d11, [sp, #16]
+    ldp     d12, d13, [sp, #32]
+    ldp     d14, d15, [sp, #48]
+    ldp     d8,  d9,  [sp], #64
+    ret
+#ifndef __APPLE__
+.size sme_tile_16x64_bf16, . - sme_tile_16x64_bf16
 .section .note.GNU-stack,"",%progbits
 #endif

@@ -617,6 +617,74 @@ EXPORT void sme_gemm_int32(const int8_t *Ap, const int8_t *Bp, int32_t *C,
                      C + (mt * 16) * Np + nt * 64, K4, Np);
 }
 
+// ---- SME bf16 GEMM (prefill, LOSSLESS). BFMOPA accumulates f32 from bf16 inputs,
+//      NO quantization (only bf16 rounding). The unique capability ggml(scalar
+//      bf16) and KleidiAI(no bf16 SME) lack on ARM. ~890 GMAC/s single-core. ----
+#ifndef TLE_NO_SME_KERNEL
+extern "C" void sme_tile_16x64_bf16(const uint16_t *, const uint16_t *, float *,
+                                    int64_t, int64_t);  // runtime_sme_kernel.S
+#else
+static void sme_tile_16x64_bf16(const uint16_t *, const uint16_t *, float *,
+                                int64_t, int64_t) {
+  fprintf(stderr, "TritonCPURuntime: sme_tile_16x64_bf16 called but the runtime "
+                  "was built without the SME kernel (toolchain lacks SME2)\n");
+  abort();
+}
+#endif
+
+// f32 -> bf16 round-to-nearest-even.
+static inline uint16_t tle_f2bf(float f) {
+  uint32_t x; __builtin_memcpy(&x, &f, 4);
+  uint32_t r = x + 0x7FFFu + ((x >> 16) & 1u);
+  return (uint16_t) (r >> 16);
+}
+
+// Pack bf16 weight [N][K] -> SME Bp [Np/64][K2][4][16][2] (Np = ceil(N/64)*64).
+EXPORT void sme_pack_weights_bf16(const uint16_t *W, uint16_t *Bp, int64_t N, int64_t K) {
+  int64_t K2 = K / 2, Np = (N + 63) / 64 * 64, NB = Np / 64;
+  for (int64_t nt = 0; nt < NB; nt++)
+    for (int64_t k2 = 0; k2 < K2; k2++)
+      for (int b = 0; b < 4; b++)
+        for (int j = 0; j < 16; j++) {
+          int64_t c = nt * 64 + b * 16 + j;
+          uint16_t *d = Bp + nt * K2 * 128 + k2 * 128 + b * 32 + j * 2;
+          d[0] = (c < N) ? W[c * K + 2 * k2 + 0] : 0;
+          d[1] = (c < N) ? W[c * K + 2 * k2 + 1] : 0;
+        }
+}
+
+// Convert + pack activation A[M][K] f32 (row stride lda bytes) -> SME Ap
+// [Mp/16][K2][16][2] bf16. No quant/scale -- bf16 RNE only. Threaded over rows.
+EXPORT void sme_pack_act_bf16_f32(const float *A, uint16_t *Ap, int64_t M, int64_t K,
+                                  int64_t lda, int64_t m_start, int64_t m_count) {
+  int64_t K2 = K / 2;
+  for (int64_t r = m_start; r < m_start + m_count && r < M; r++) {
+    const float *arow = (const float *) ((const char *) A + r * lda);
+    int64_t mt = r / 16, i = r % 16;
+    uint16_t *base = Ap + mt * K2 * 32 + i * 2;
+    for (int64_t k2 = 0; k2 < K2; k2++) {
+      base[k2 * 32 + 0] = tle_f2bf(arow[2 * k2 + 0]);
+      base[k2 * 32 + 1] = tle_f2bf(arow[2 * k2 + 1]);
+    }
+  }
+}
+
+// SME bf16 GEMM: Ap x Bp -> C f32 [Mp][Np]. ONE thread (single SME unit). Output
+// is the result directly (no dequant). Caller must check tle_cpu_has_sme() first.
+EXPORT void sme_gemm_bf16(const uint16_t *Ap, const uint16_t *Bp, float *C,
+                          int64_t Mp, int64_t Np, int64_t K2) {
+  if (!tle_cpu_has_sme()) {
+    fprintf(stderr, "TritonCPURuntime: sme_gemm_bf16 called on a CPU/build "
+                    "without usable SME (check tle_cpu_has_sme() first)\n");
+    abort();
+  }
+  int64_t MT = Mp / 16, NT = Np / 64;
+  for (int64_t mt = 0; mt < MT; mt++)
+    for (int64_t nt = 0; nt < NT; nt++)
+      sme_tile_16x64_bf16(Ap + mt * K2 * 32, Bp + nt * K2 * 128,
+                          C + (mt * 16) * Np + nt * 64, K2, Np);
+}
+
 // ===== TLE-Struct micro-kernel: ONE fixed 8x8 SMMLA output tile (4 mp-pairs x
 //       4 np-pairs, 16 accumulators in registers). This is the "Raw leaf"; the
 //       M/N tiling is orchestrated by the upper Triton kernel (the Struct layer).
