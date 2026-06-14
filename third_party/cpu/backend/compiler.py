@@ -263,7 +263,7 @@ class CPUBackend(BaseBackend):
             "1", "ON", "YES", "TRUE", "Y",
         )
         convert_neon_i8mm = (enable_neon_i8mm and not convert_sve2_i8mm and
-                             (self.cpu_arch == "aarch64" or self.cpu_arch == "armv8") and
+                             (self.cpu_arch in ("aarch64", "armv8", "arm64")) and
                              ("i8mm" in self.cpu_features))
         if convert_neon_i8mm:
             cpu.passes.ttcpuir.add_convert_dot_to_neon_i8mm(pm)
