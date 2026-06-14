@@ -126,6 +126,9 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_convert_dot_to_sve2_i8mm", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertDotToSVE2I8MM());
   });
+  m.def("add_convert_dot_to_neon_i8mm", [](mlir::PassManager &pm) {
+    pm.addPass(mlir::triton::cpu::createConvertDotToNeonI8MM());
+  });
   m.def("add_convert_dot_to_fma", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertDotToFMA());
   });

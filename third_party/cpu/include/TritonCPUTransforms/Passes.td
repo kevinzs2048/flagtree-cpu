@@ -142,6 +142,23 @@ def ConvertDotToSVE2I8MM
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
+def ConvertDotToNeonI8MM
+    : Pass<"triton-cpu-convert-dot-to-neon-i8mm", "mlir::ModuleOp"> {
+    let summary = "Convert dot product op to NEON i8mm (SMMLA) intrinsics.";
+    let description = [{
+        Lower int8 matmul to NEON i8mm (smmla) for ARM cores with NEON i8mm but
+        no SVE2 (e.g. Apple M-series). Fixed-width analog of ConvertDotToSVE2I8MM.
+    }];
+
+    let constructor = "mlir::triton::cpu::createConvertDotToNeonI8MM()";
+
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::vector::VectorDialect",
+                             "mlir::LLVM::LLVMDialect",
+                             "mlir::triton::TritonDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
 def ConvertDotToFMA : Pass<"triton-cpu-convert-dot-to-fma", "mlir::ModuleOp"> {
     let summary = "Decompose dot product op to a series of FMA operations.";
     let description = [{ }];

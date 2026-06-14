@@ -257,6 +257,16 @@ class CPUBackend(BaseBackend):
                              ("sve2" in self.cpu_features))
         if convert_sve2_i8mm:
             cpu.passes.ttcpuir.add_convert_dot_to_sve2_i8mm(pm)
+        # NEON i8mm (SMMLA): ARM cores with NEON i8mm but no SVE2 (e.g. Apple M).
+        # Opt-in via TRITON_CPU_NEON_I8MM=1 while the pass is under development.
+        enable_neon_i8mm = os.getenv("TRITON_CPU_NEON_I8MM", "0").upper() in (
+            "1", "ON", "YES", "TRUE", "Y",
+        )
+        convert_neon_i8mm = (enable_neon_i8mm and not convert_sve2_i8mm and
+                             (self.cpu_arch == "aarch64" or self.cpu_arch == "armv8") and
+                             ("i8mm" in self.cpu_features))
+        if convert_neon_i8mm:
+            cpu.passes.ttcpuir.add_convert_dot_to_neon_i8mm(pm)
         if 'amx-tile' in self.cpu_features:
             amx_int8 = 'amx-int8' in self.cpu_features
             # amx_fp16 = 'amx-fp16' in self.cpu_features
