@@ -356,6 +356,30 @@ def sdot_gemv_uk(a, b, c, K4, N4, BN4, blk, _builder=None):
 
 
 @builtin
+def mma_uk(variant, *args, _builder=None):
+    """MMA abstraction: swap the int8 matmul INSTRUCTION at the call site.
+
+    ``variant`` is resolved at JIT-trace time (a Python str / constexpr), so this
+    is a zero-cost dispatch to the matching hand micro-kernel -- the CPU analog
+    of selecting mma.sync vs wgmma behind TileLang's ``T.gemm``. A Struct kernel
+    author writes one ``tle_cpu.mma_uk(VARIANT, ...)`` and the lowering picks
+    SMMLA / SME / SDOT. Pass the args the chosen leaf expects:
+
+      variant="smmla": (ap, wp, c, xs, ws, K8, MP, N, mp0, np0)   # NEON 8x8
+      variant="sme"  : (ap, bp, c, K4, Np, mt, nt)                # SME 16x64
+      variant="sdot" : (a, b, c, K4, N4, BN4, blk)                # NEON GEMV (M=1)
+    """
+    v = _unwrap_if_constexpr(variant)
+    if v == "smmla":
+        return smmla_uk(*args, _builder=_builder)
+    if v == "sme":
+        return sme_uk(*args, _builder=_builder)
+    if v == "sdot":
+        return sdot_gemv_uk(*args, _builder=_builder)
+    raise ValueError(f"unknown mma_uk variant {v!r}; have 'smmla'/'sme'/'sdot'")
+
+
+@builtin
 def swiglu_uk(gate, up, out, off, n, _builder=None):
     """TLE-Struct micro-kernel: SwiGLU on one block."""
     _builder.create_cpu_swiglu_uk(gate.handle, up.handle, out.handle, _i64(off,_builder), _i64(n,_builder))
