@@ -124,11 +124,6 @@ def is_xpu():
     return False if target is None else target.backend == "xpu"
 
 
-def get_arch():
-    target = get_current_target()
-    return "" if target is None else str(target.arch)
-
-
 def is_cpu():
     return not is_interpreter() and \
         triton.runtime.driver.active.get_current_target().backend == "cpu"
