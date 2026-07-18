@@ -1,3 +1,23 @@
+// Copyright 2026 FlagOS Contributors
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 // RUN: triton-opt %s -convert-triton-to-tritongpu="target=hip:gfx942 num-ctas=1 num-warps=4 threads-per-warp=64" -tritongpu-coalesce -tritonamdgpu-accelerate-matmul="arch-generation-name=gfx942 matrix-instruction-size=32 kPack=1" -tritongpu-remove-layout-conversions -tritonamdgpu-stream-pipeline="num_stages=1" -triton-amdgpu-insert-instruction-sched-hints="variant=local_prefetch" -tritongpu-reduce-data-duplication -optimize-amd-lds-usage="target-arch=gfx942" -convert-scf-to-cf -convert-index-to-llvm -allocate-shared-memory -convert-triton-amdgpu-to-llvm="arch=gfx942" -verify-diagnostics | FileCheck %s -check-prefix=INSTR_COUNT_NS1
 // RUN: triton-opt %s -convert-triton-to-tritongpu="target=hip:gfx942 num-ctas=1 num-warps=4 threads-per-warp=64" -tritongpu-coalesce -tritonamdgpu-accelerate-matmul="arch-generation-name=gfx942 matrix-instruction-size=32 kPack=1" -tritongpu-remove-layout-conversions -tritonamdgpu-stream-pipeline="num_stages=2" -triton-amdgpu-insert-instruction-sched-hints="variant=local_prefetch" -tritongpu-reduce-data-duplication -optimize-amd-lds-usage="target-arch=gfx942" -convert-scf-to-cf -convert-index-to-llvm -allocate-shared-memory -convert-triton-amdgpu-to-llvm="arch=gfx942" -verify-diagnostics | FileCheck %s -check-prefix=INSTR_COUNT_NS2
 // RUN: triton-opt %s -convert-triton-to-tritongpu="target=hip:gfx942 num-ctas=1 num-warps=4 threads-per-warp=64" -tritongpu-coalesce -tritonamdgpu-accelerate-matmul="arch-generation-name=gfx942 matrix-instruction-size=16 kPack=1" -tritongpu-remove-layout-conversions -tritonamdgpu-stream-pipeline="num_stages=2" -triton-amdgpu-insert-instruction-sched-hints="variant=local_prefetch" -tritongpu-reduce-data-duplication -optimize-amd-lds-usage="target-arch=gfx942" -convert-scf-to-cf -convert-index-to-llvm -allocate-shared-memory -convert-triton-amdgpu-to-llvm="arch=gfx942" -triton-amdgpu-lower-insert-instruction-sched-hints="arch=gfx942 num_stages=2" -debug-only="lower-insert-instruction-sched-hints" -verify-diagnostics 2>&1 | FileCheck %s -check-prefix=USE_LOCAL_PREFETCH_GLOBAL_LOAD
