@@ -106,6 +106,63 @@ struct SdotGemvOpLowering : public OpRewritePattern<triton::cpu::SdotGemvOp> {
   }
 };
 
+// ---------- Direct KleidiAI quantized linear ops -> runtime calls ----------
+
+template <typename OpType>
+static LogicalResult lowerKleidiAILinear(OpType op, PatternRewriter &rewriter,
+                                         StringRef funcName) {
+  auto loc = op.getLoc();
+  auto ctx = rewriter.getContext();
+  auto module = op->template getParentOfType<ModuleOp>();
+  auto i64Ty = IntegerType::get(ctx, 64);
+  auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+
+  auto funcOp = module.template lookupSymbol<LLVM::LLVMFuncOp>(funcName);
+  if (!funcOp) {
+    auto voidTy = LLVM::LLVMVoidType::get(ctx);
+    auto funcType = LLVM::LLVMFunctionType::get(
+        voidTy, {ptrTy, ptrTy, ptrTy, i64Ty, i64Ty, i64Ty}, false);
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(module.getBody());
+    funcOp = rewriter.create<LLVM::LLVMFuncOp>(UnknownLoc::get(ctx), funcName,
+                                               funcType);
+  }
+
+  auto castPtr = [&](Value value) -> Value {
+    if (isa<LLVM::LLVMPointerType>(value.getType()))
+      return value;
+    return rewriter.create<UnrealizedConversionCastOp>(loc, ptrTy, value)
+        .getResult(0);
+  };
+
+  rewriter.create<LLVM::CallOp>(
+      loc, funcOp,
+      ValueRange{castPtr(op.getXPtr()), castPtr(op.getWPackedPtr()),
+                 castPtr(op.getOutPtr()), op.getM(), op.getK(), op.getN()});
+  rewriter.eraseOp(op);
+  return success();
+}
+
+struct KleidiAIW4A8LinearOpLowering
+    : public OpRewritePattern<triton::cpu::KleidiAIW4A8LinearOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::cpu::KleidiAIW4A8LinearOp op,
+                                PatternRewriter &rewriter) const override {
+    return lowerKleidiAILinear(op, rewriter, "flagtree_kai_w4a8_linear");
+  }
+};
+
+struct KleidiAIW8A8LinearOpLowering
+    : public OpRewritePattern<triton::cpu::KleidiAIW8A8LinearOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(triton::cpu::KleidiAIW8A8LinearOp op,
+                                PatternRewriter &rewriter) const override {
+    return lowerKleidiAILinear(op, rewriter, "flagtree_kai_w8a8_linear");
+  }
+};
+
 // ---------- CpuFusedDecodeStepOp → runtime call (returns i64) ----------
 
 struct FusedDecodeStepOpLowering
@@ -562,6 +619,8 @@ std::unique_ptr<Pass> createNeonSdotToLLVMPass() {
       RewritePatternSet patterns(ctx);
       patterns.add<NeonSdotOpLowering>(ctx);
       patterns.add<SdotGemvOpLowering>(ctx);
+      patterns.add<KleidiAIW4A8LinearOpLowering>(ctx);
+      patterns.add<KleidiAIW8A8LinearOpLowering>(ctx);
       patterns.add<SdotGemvFusedBf16OpLowering>(ctx);
       patterns.add<SdotPackWeightsOpLowering>(ctx);
       patterns.add<RmsNormOpLowering>(ctx);

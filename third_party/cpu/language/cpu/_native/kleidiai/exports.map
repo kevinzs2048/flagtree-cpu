@@ -1,0 +1,7 @@
+{
+  global:
+    flagtree_kai_w4a8_*;
+    flagtree_kai_w8a8_*;
+  local:
+    *;
+};

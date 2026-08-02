@@ -425,4 +425,30 @@ def TTC_SdotPackWeightsOp : TTC_Op<"sdot_pack_weights", []> {
     let assemblyFormat = "$b_ptr `,` $b_packed_ptr `,` $K `,` $N attr-dict `:` type($b_ptr) `,` type($b_packed_ptr)";
 }
 
+def TTC_KleidiAIW4A8LinearOp : TTC_Op<"kleidiai_w4a8_linear", []> {
+    let summary = "Direct KleidiAI W4A8 linear for AArch64";
+    let description = [{
+      Runs a BF16 activation against a KleidiAI-packed QSI4 RHS. The runtime
+      dimension M selects dot-product GEMV for decode or i8mm GEMM for
+      prefill. Lowers to flagtree_kai_w4a8_linear.
+    }];
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$w_packed_ptr,
+                         TT_Ptr:$out_ptr, I64:$M, I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $w_packed_ptr `,` $out_ptr `,` $M `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($w_packed_ptr) `,` type($out_ptr)";
+}
+
+def TTC_KleidiAIW8A8LinearOp : TTC_Op<"kleidiai_w8a8_linear", []> {
+    let summary = "Direct KleidiAI W8A8 linear for AArch64";
+    let description = [{
+      Runs a BF16 activation against a KleidiAI-packed QSI8 RHS. The runtime
+      dimension M selects dot-product GEMV for decode or i8mm GEMM for
+      prefill. Lowers to flagtree_kai_w8a8_linear.
+    }];
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$w_packed_ptr,
+                         TT_Ptr:$out_ptr, I64:$M, I64:$K, I64:$N);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $w_packed_ptr `,` $out_ptr `,` $M `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($w_packed_ptr) `,` type($out_ptr)";
+}
+
 #endif

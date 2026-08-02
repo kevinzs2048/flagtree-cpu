@@ -1522,7 +1522,22 @@ void init_triton_ir(py::module &&m) {
                throw pybind11::index_error("program_id must be in [0,3]");
              return self.create<GetNumProgramsOp>(axis);
            })
-      // ARM64 TLE ops (create_cpu_*) injected by tle_arm64 plugin
+      // Direct KleidiAI CPU ops are available in both standalone triton-cpu
+      // and FlagTree's tle_arm64 plugin build.
+      .def("create_cpu_kleidiai_w4a8_linear",
+           [](TritonOpBuilder &self, Value &xPtr, Value &wPackedPtr,
+              Value &outPtr, Value &m, Value &k, Value &n) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::KleidiAIW4A8LinearOp>(xPtr, wPackedPtr, outPtr,
+                                                    m, k, n);
+           })
+      .def("create_cpu_kleidiai_w8a8_linear",
+           [](TritonOpBuilder &self, Value &xPtr, Value &wPackedPtr,
+              Value &outPtr, Value &m, Value &k, Value &n) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::KleidiAIW8A8LinearOp>(xPtr, wPackedPtr, outPtr,
+                                                    m, k, n);
+           })
       .def("create_dot",
            [](TritonOpBuilder &self, mlir::Value &a, mlir::Value &b,
               mlir::Value &c, InputPrecision inputPrecision,

@@ -338,3 +338,30 @@ def sdot(acc, a, b, _builder=None):
         _builder.create_cpu_neon_sdot(acc.handle, a.handle, b.handle),
         acc.type,
     )
+
+
+def _as_i64(value, builder):
+    raw = _unwrap_if_constexpr(value)
+    return raw.handle if hasattr(raw, "handle") else builder.get_int64(raw)
+
+
+@builtin
+def kleidiai_w4a8_linear(
+    x_ptr, w_packed_ptr, out_ptr, M, K, N, _builder=None
+):
+    """Emit the direct KleidiAI W4A8 CPU op with a runtime M dimension."""
+    _builder.create_cpu_kleidiai_w4a8_linear(
+        x_ptr.handle, w_packed_ptr.handle, out_ptr.handle,
+        _as_i64(M, _builder), _as_i64(K, _builder), _as_i64(N, _builder))
+    return None
+
+
+@builtin
+def kleidiai_w8a8_linear(
+    x_ptr, w_packed_ptr, out_ptr, M, K, N, _builder=None
+):
+    """Emit the direct KleidiAI W8A8 CPU op with a runtime M dimension."""
+    _builder.create_cpu_kleidiai_w8a8_linear(
+        x_ptr.handle, w_packed_ptr.handle, out_ptr.handle,
+        _as_i64(M, _builder), _as_i64(K, _builder), _as_i64(N, _builder))
+    return None
