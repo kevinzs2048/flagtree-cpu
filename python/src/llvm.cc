@@ -89,7 +89,7 @@ createTargetMachine(llvm::Module *module, std::string proc,
     if (!target) {
       throw std::runtime_error("target lookup error: " + error);
     }
-    module->setTargetTriple(triple);
+    module->setTargetTriple(llvm::Triple(triple));
   }
   llvm::TargetOptions opt;
   bool disableLLVMOpt = mlir::triton::tools::getBoolEnv("DISABLE_LLVM_OPT");
@@ -184,7 +184,7 @@ std::string translateLLVMIRToASM(
   // module->print(llvm::outs(), nullptr);
 
   // create machine
-  module.setTargetTriple(triple);
+  module.setTargetTriple(llvm::Triple(triple));
   auto machine = createTargetMachine(&module, proc, enable_fp_fusion, features,
                                      enable_fast_math);
   // set data layout
@@ -335,7 +335,7 @@ void init_triton_llvm(py::module &&m) {
     llvm::TargetOptions opt;
     // Target machine is only used to create the data layout.
     std::unique_ptr<llvm::TargetMachine> machine{target->createTargetMachine(
-        triple, proc, features, opt, llvm::Reloc::PIC_,
+        llvm::Triple(triple), proc, features, opt, llvm::Reloc::PIC_,
         std::nullopt, llvm::CodeGenOptLevel::None)};
     // set data layout
     mod->setDataLayout(machine->createDataLayout());
@@ -463,7 +463,7 @@ void init_triton_llvm(py::module &&m) {
 
   m.def("set_host_target", [](llvm::Module *mod) {
     auto triple = getDefaultTargerOrProcessTriple();
-    mod->setTargetTriple(triple);
+    mod->setTargetTriple(llvm::Triple(triple));
     std::string error;
     auto target =
         llvm::TargetRegistry::lookupTarget(mod->getTargetTriple(), error);
