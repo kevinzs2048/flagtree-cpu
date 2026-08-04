@@ -1,14 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2026 BAAI
 // SPDX-License-Identifier: Apache-2.0
 
-/* Offline RHS packing and optional profiling for FlagTree's W4A8 runtime. */
+/* Offline channelwise RHS packing and optional profiling. */
 #include <stddef.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
 
-#include "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4c32p/kai_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod.h"
-#include "kai/ukernels/matmul/pack/kai_rhs_pack_nxk_qsi4c32p_qsu4c32s1s0.h"
+#include "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4cxp/kai_matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod.h"
+#include "kai/ukernels/matmul/pack/kai_rhs_pack_nxk_qsi4cxp_qs4cxs1s0.h"
 
 #if defined(__GNUC__)
 #define FLAGTREE_KAI_EXPORT __attribute__((visibility("default")))
@@ -16,33 +16,27 @@
 #define FLAGTREE_KAI_EXPORT
 #endif
 
-#define UKERNEL matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod
+#define UKERNEL matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod
 #define _CAT(a, b) a##b
 #define CAT(a, b) _CAT(a, b)
 #define KGET(name) CAT(CAT(kai_get_, name), CAT(_, UKERNEL))
 
 FLAGTREE_KAI_EXPORT size_t flagtree_kai_w4a8_rhs_packed_size(
-    size_t n, size_t k, size_t block_length) {
-    return kai_get_rhs_packed_size_rhs_pack_nxk_qsi4c32p_qsu4c32s1s0(
-        n, k, KGET(nr)(), KGET(kr)(), KGET(sr)(), block_length,
-        kai_dt_bf16);
+    size_t n, size_t k) {
+    return kai_get_rhs_packed_size_rhs_pack_nxk_qsi4cxp_qs4cxs1s0(
+        n, k, KGET(nr)(), KGET(kr)(), KGET(sr)());
 }
 
 FLAGTREE_KAI_EXPORT void flagtree_kai_w4a8_pack_rhs(
-    size_t n, size_t k, size_t block_length, const uint8_t *native_rhs,
-    const uint16_t *bf16_scales, void *packed_rhs) {
-    struct kai_rhs_pack_nxk_qsi4c32p_qsu4c32s1s0_params params;
+    size_t n, size_t k, const uint8_t *native_rhs,
+    const float *scales, void *packed_rhs) {
+    struct kai_rhs_pack_nxk_qsi4cxp_qs4cxs1s0_params params;
     params.lhs_zero_point = 1;
     params.rhs_zero_point = 8;
-    params.scale_dt = kai_dt_bf16;
 
-    const size_t rhs_stride = (k + 1) / 2;
-    const size_t scale_stride =
-        ((k + block_length - 1) / block_length) * sizeof(uint16_t);
-    kai_run_rhs_pack_nxk_qsi4c32p_qsu4c32s1s0(
-        1, n, k, KGET(nr)(), KGET(kr)(), KGET(sr)(), block_length,
-        native_rhs, rhs_stride, NULL, bf16_scales, scale_stride,
-        packed_rhs, 0, &params);
+    kai_run_rhs_pack_nxk_qsi4cxp_qs4cxs1s0(
+        1, n, k, KGET(nr)(), KGET(kr)(), KGET(sr)(), native_rhs,
+        NULL, scales, packed_rhs, 0, &params);
 }
 
 #define FL_PROFILE_SLOTS 64

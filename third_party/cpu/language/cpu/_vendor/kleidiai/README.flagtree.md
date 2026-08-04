@@ -9,6 +9,7 @@ direct W4A8 and W8A8 CPU runtimes.
 - Local modifications to files below `kai/`: none
 
 The selected translation units implement BF16-to-dynamic-INT8 LHS packing,
-QSI4/QSI8 RHS packing, dot-product GEMV, and i8mm GEMM. FlagTree's integration
-sources live separately in `_native/kleidiai`; `kleidiai.py` compiles each
-runtime to a content-addressed cache outside the source tree.
+channelwise QSI4 and channelwise QSI8 RHS packing, dot-product GEMV, and i8mm
+GEMM. FlagTree's integration sources live separately in `_native/kleidiai`;
+`kleidiai.py` compiles each runtime to a content-addressed cache outside the
+source tree.
