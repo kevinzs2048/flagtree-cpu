@@ -1,14 +1,19 @@
 // SPDX-FileCopyrightText: Copyright 2026 BAAI
 // SPDX-License-Identifier: Apache-2.0
 
-/* Offline channelwise RHS packing and optional profiling. */
+/* Offline RHS packing (channelwise and blockwise) and optional profiling. */
 #include <stddef.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
 
+#include "kai/kai_common.h"
+#include "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4c32p/kai_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod.h"
+#include "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4c32p/kai_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm.h"
 #include "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4cxp/kai_matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod.h"
+#include "kai/ukernels/matmul/pack/kai_rhs_pack_nxk_qsi4c32p_qsu4c32s1s0.h"
 #include "kai/ukernels/matmul/pack/kai_rhs_pack_nxk_qsi4cxp_qs4cxs1s0.h"
+#include "w4a8_layout.h"
 
 #if defined(__GNUC__)
 #define FLAGTREE_KAI_EXPORT __attribute__((visibility("default")))
@@ -20,6 +25,12 @@
 #define _CAT(a, b) a##b
 #define CAT(a, b) _CAT(a, b)
 #define KGET(name) CAT(CAT(kai_get_, name), CAT(_, UKERNEL))
+
+/* The grouped path packs against the dotprod ukernel's nr/kr/sr.  Both c32
+ * ukernels must agree on those, otherwise one packed buffer could not serve
+ * decode and prefill; kai_w4a8_selftest() asserts it at build time. */
+#define UKERNEL_G matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod
+#define KGET_G(name) CAT(CAT(kai_get_, name), CAT(_, UKERNEL_G))
 
 FLAGTREE_KAI_EXPORT size_t flagtree_kai_w4a8_rhs_packed_size(
     size_t n, size_t k) {
@@ -37,6 +48,43 @@ FLAGTREE_KAI_EXPORT void flagtree_kai_w4a8_pack_rhs(
     kai_run_rhs_pack_nxk_qsi4cxp_qs4cxs1s0(
         1, n, k, KGET(nr)(), KGET(kr)(), KGET(sr)(), native_rhs,
         NULL, scales, packed_rhs, 0, &params);
+}
+
+/* Blockwise (qsi4c32) packing.  Scales stay BF16 all the way to the ukernel:
+ * that is the checkpoint's own dtype, so there is no conversion step and no
+ * rounding introduced on top of what GPTQ already chose. */
+FLAGTREE_KAI_EXPORT size_t flagtree_kai_w4a8_grouped_rhs_packed_size(
+    size_t n, size_t k, size_t bl) {
+    return kai_get_rhs_packed_size_rhs_pack_nxk_qsi4c32p_qsu4c32s1s0(
+        n, k, KGET_G(nr)(), KGET_G(kr)(), KGET_G(sr)(), bl, kai_dt_bf16);
+}
+
+FLAGTREE_KAI_EXPORT void flagtree_kai_w4a8_grouped_pack_rhs(
+    size_t n, size_t k, size_t bl, const uint8_t *native_rhs,
+    const void *scales, size_t scale_stride, void *packed_rhs) {
+    struct kai_rhs_pack_nxk_qsi4c32p_qsu4c32s1s0_params params;
+    params.lhs_zero_point = 1;
+    params.rhs_zero_point = 8;
+    params.scale_dt = kai_dt_bf16;
+
+    kai_run_rhs_pack_nxk_qsi4c32p_qsu4c32s1s0(
+        1, n, k, KGET_G(nr)(), KGET_G(kr)(), KGET_G(sr)(), bl, native_rhs,
+        k / 2, NULL, scales, scale_stride, packed_rhs, 0, &params);
+}
+
+/* Reports the header size and validates the two c32 ukernels share a packed
+ * RHS layout.  Returns 0 when they disagree so the Python side can refuse to
+ * use the grouped path rather than silently computing wrong results. */
+FLAGTREE_KAI_EXPORT size_t flagtree_kai_w4a8_header_bytes(void) {
+    if (kai_get_nr_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm() !=
+            KGET_G(nr)() ||
+        kai_get_kr_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm() !=
+            KGET_G(kr)() ||
+        kai_get_sr_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm() !=
+            KGET_G(sr)()) {
+        return 0;
+    }
+    return FL_W4A8_HEADER_BYTES;
 }
 
 #define FL_PROFILE_SLOTS 64

@@ -57,6 +57,19 @@ _SOURCES = {
         "kai_matmul_clamp_bf16_qai8dxp4x8_qsi4cxp8x8_8x8_neon_i8mm.c",
         "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4cxp/"
         "kai_matmul_clamp_bf16_qai8dxp4x8_qsi4cxp8x8_8x8_neon_i8mm_asm.S",
+        # Blockwise (qsi4c32) pair for grouped checkpoints.  These live in the
+        # same variant as the channelwise pair on purpose: the runtime symbol is
+        # loaded RTLD_GLOBAL, and a grouped body with a channelwise lm_head must
+        # resolve both layouts inside one process.
+        "kai/ukernels/matmul/pack/kai_rhs_pack_nxk_qsi4c32p_qsu4c32s1s0.c",
+        "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4c32p/"
+        "kai_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod.c",
+        "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4c32p/"
+        "kai_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod_asm.S",
+        "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4c32p/"
+        "kai_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm.c",
+        "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4c32p/"
+        "kai_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm_asm.S",
     ),
     "w8a8": (
         "kai/ukernels/matmul/pack/kai_rhs_pack_nxk_qsi8cxp_qsi8cx_neon.c",

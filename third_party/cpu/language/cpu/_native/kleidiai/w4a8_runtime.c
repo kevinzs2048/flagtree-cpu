@@ -18,9 +18,12 @@
 #include <string.h>
 #include <time.h>
 
+#include "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4c32p/kai_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod.h"
+#include "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4c32p/kai_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm.h"
 #include "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4cxp/kai_matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod.h"
 #include "kai/ukernels/matmul/matmul_clamp_bf16_qai8dxp_qsi4cxp/kai_matmul_clamp_bf16_qai8dxp4x8_qsi4cxp8x8_8x8_neon_i8mm.h"
 #include "kai/ukernels/matmul/pack/kai_lhs_quant_pack_qai8dxp_bf16_neon.h"
+#include "w4a8_layout.h"
 
 #if defined(__GNUC__)
 #define FLAGTREE_KAI_EXPORT __attribute__((visibility("default")))
@@ -28,14 +31,37 @@
 #define FLAGTREE_KAI_EXPORT
 #endif
 
+/* The blockwise ukernels take an extra block length.  Threading `bl` through
+ * the shared signature and letting the channelwise adapters drop it keeps one
+ * pack/compute decomposition for both layouts instead of duplicating it. */
 typedef size_t (*get_value_fn)(void);
-typedef size_t (*get_rhs_offset_fn)(size_t n_idx, size_t k);
+typedef size_t (*get_rhs_offset_fn)(size_t n_idx, size_t k, size_t bl);
 typedef size_t (*get_dst_offset_fn)(
     size_t m_idx, size_t n_idx, size_t dst_stride);
 typedef void (*run_matmul_fn)(
-    size_t m, size_t n, size_t k, const void *lhs_packed,
+    size_t m, size_t n, size_t k, size_t bl, const void *lhs_packed,
     const void *rhs_packed, void *dst, size_t dst_stride_row,
     size_t dst_stride_col, float clamp_min, float clamp_max);
+
+#define FL_DEFINE_CX_ADAPTERS(tag, ukernel)                                   \
+    static size_t fl_rhs_offset_##tag(size_t n_idx, size_t k, size_t bl) {    \
+        (void)bl;                                                             \
+        return kai_get_rhs_packed_offset_##ukernel(n_idx, k);                 \
+    }                                                                         \
+    static void fl_run_##tag(                                                 \
+        size_t m, size_t n, size_t k, size_t bl, const void *lhs_packed,      \
+        const void *rhs_packed, void *dst, size_t dst_stride_row,             \
+        size_t dst_stride_col, float clamp_min, float clamp_max) {            \
+        (void)bl;                                                             \
+        kai_run_##ukernel(                                                    \
+            m, n, k, lhs_packed, rhs_packed, dst, dst_stride_row,             \
+            dst_stride_col, clamp_min, clamp_max);                            \
+    }
+
+FL_DEFINE_CX_ADAPTERS(
+    gemv, matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod)
+FL_DEFINE_CX_ADAPTERS(
+    gemm, matmul_clamp_bf16_qai8dxp4x8_qsi4cxp8x8_8x8_neon_i8mm)
 
 struct w4a8_kernel {
     get_value_fn get_n_step;
@@ -52,9 +78,9 @@ static const struct w4a8_kernel gemv = {
     kai_get_mr_matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod,
     kai_get_kr_matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod,
     kai_get_sr_matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod,
-    kai_get_rhs_packed_offset_matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod,
+    fl_rhs_offset_gemv,
     kai_get_dst_offset_matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod,
-    kai_run_matmul_clamp_bf16_qai8dxp1x8_qsi4cxp8x8_1x8_neon_dotprod,
+    fl_run_gemv,
 };
 
 static const struct w4a8_kernel gemm = {
@@ -62,9 +88,31 @@ static const struct w4a8_kernel gemm = {
     kai_get_mr_matmul_clamp_bf16_qai8dxp4x8_qsi4cxp8x8_8x8_neon_i8mm,
     kai_get_kr_matmul_clamp_bf16_qai8dxp4x8_qsi4cxp8x8_8x8_neon_i8mm,
     kai_get_sr_matmul_clamp_bf16_qai8dxp4x8_qsi4cxp8x8_8x8_neon_i8mm,
-    kai_get_rhs_packed_offset_matmul_clamp_bf16_qai8dxp4x8_qsi4cxp8x8_8x8_neon_i8mm,
+    fl_rhs_offset_gemm,
     kai_get_dst_offset_matmul_clamp_bf16_qai8dxp4x8_qsi4cxp8x8_8x8_neon_i8mm,
-    kai_run_matmul_clamp_bf16_qai8dxp4x8_qsi4cxp8x8_8x8_neon_i8mm,
+    fl_run_gemm,
+};
+
+/* Blockwise counterparts.  Same M dispatch: dotprod for decode, i8mm for
+ * prefill. */
+static const struct w4a8_kernel gemv_grouped = {
+    kai_get_n_step_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod,
+    kai_get_mr_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod,
+    kai_get_kr_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod,
+    kai_get_sr_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod,
+    kai_get_rhs_packed_offset_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod,
+    kai_get_dst_offset_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod,
+    kai_run_matmul_clamp_bf16_qai8dxp1x8_qsi4c32p4x8_1x4_neon_dotprod,
+};
+
+static const struct w4a8_kernel gemm_grouped = {
+    kai_get_n_step_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm,
+    kai_get_mr_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm,
+    kai_get_kr_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm,
+    kai_get_sr_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm,
+    kai_get_rhs_packed_offset_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm,
+    kai_get_dst_offset_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm,
+    kai_run_matmul_clamp_bf16_qai8dxp4x8_qsi4c32p4x8_16x4_neon_i8mm,
 };
 
 void flagtree_kai_w4a8_profile_record(
@@ -128,18 +176,19 @@ static void pack_lhs_chunk(
 
 static void run_n_stripe(
     size_t worker, size_t cols_per_worker, size_t worker_count,
-    size_t m, size_t n, size_t k, const struct w4a8_kernel *kernel,
+    size_t m, size_t n, size_t k, size_t bl,
+    const struct w4a8_kernel *kernel,
     const void *lhs, const void *rhs, uint16_t *out) {
     const size_t n_idx = worker * cols_per_worker;
     const size_t cols = worker + 1 == worker_count
         ? n - n_idx
         : cols_per_worker;
     const uint8_t *rhs_chunk =
-        (const uint8_t *)rhs + kernel->get_rhs_offset(n_idx, k);
+        (const uint8_t *)rhs + kernel->get_rhs_offset(n_idx, k, bl);
     uint8_t *dst_chunk = (uint8_t *)out +
         kernel->get_dst_offset(0, n_idx, n * sizeof(uint16_t));
     kernel->run(
-        m, cols, k, lhs, rhs_chunk, dst_chunk, n * sizeof(uint16_t),
+        m, cols, k, bl, lhs, rhs_chunk, dst_chunk, n * sizeof(uint16_t),
         sizeof(uint16_t), -FLT_MAX, FLT_MAX);
 }
 
@@ -153,7 +202,23 @@ FLAGTREE_KAI_EXPORT void flagtree_kai_w4a8_linear(
         return;
     }
 
-    const struct w4a8_kernel *kernel = m == 1 ? &gemv : &gemm;
+    /* The layout header tells channelwise and blockwise buffers apart, so one
+     * process can serve a grouped body and a channelwise lm_head at once.
+     * Buffers written before the header existed have no magic and are treated
+     * as channelwise, which is what they are. */
+    const struct fl_w4a8_header *header = (const struct fl_w4a8_header *)rhs;
+    size_t bl = 0;
+    if (header->magic == FL_W4A8_MAGIC) {
+        bl = (size_t)header->bl;
+        rhs = (const uint8_t *)rhs + FL_W4A8_HEADER_BYTES;
+    }
+
+    const struct w4a8_kernel *kernel;
+    if (bl == 0) {
+        kernel = m == 1 ? &gemv : &gemm;
+    } else {
+        kernel = m == 1 ? &gemv_grouped : &gemm_grouped;
+    }
     const size_t mr = kernel->get_mr();
     const size_t kr = kernel->get_kr();
     const size_t sr = kernel->get_sr();
@@ -193,7 +258,7 @@ FLAGTREE_KAI_EXPORT void flagtree_kai_w4a8_linear(
     packed_ns = profile ? monotonic_ns() : 0;
 
     if (total_threads == 1) {
-        run_n_stripe(0, n, 1, m, n, k, kernel, lhs, rhs, out);
+        run_n_stripe(0, n, 1, m, n, k, bl, kernel, lhs, rhs, out);
     } else {
 #pragma omp parallel
         {
@@ -206,7 +271,7 @@ FLAGTREE_KAI_EXPORT void flagtree_kai_w4a8_linear(
             if (worker < compute_workers) {
                 run_n_stripe(
                     worker, cols_per_worker, compute_workers,
-                    m, n, k, kernel, lhs, rhs, out);
+                    m, n, k, bl, kernel, lhs, rhs, out);
             }
         }
     }
