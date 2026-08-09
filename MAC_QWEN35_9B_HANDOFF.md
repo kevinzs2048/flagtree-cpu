@@ -50,9 +50,12 @@ python3 -m venv /Users/kevin/venvs/triton-qwen35
 source /Users/kevin/venvs/triton-qwen35/bin/activate
 python -m pip install -U pip setuptools wheel ninja cmake
 python -m pip install torch==2.13.0 transformers==5.13.0 safetensors sentencepiece
+export TRITON_PLUGIN_DIRS="$PWD/third_party/cpu"
 make dev-install PYTHON=python
 make PYTHON=python
 ```
+
+`TRITON_PLUGIN_DIRS` 不能省略。CPU backend 在 Triton 3.7.2 中以外部 plugin 形式接入；如果干净 venv 安装时没有该变量，`triton.runtime` 会报告 `0 active drivers`。
 
 如果 Transformers/PyTorch 的 Mac wheel 版本与上述不同，要在结果中记录实际版本，不要将不同版本的 eager/compiled 结果混在一起。
 
