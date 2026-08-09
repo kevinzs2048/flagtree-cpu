@@ -653,6 +653,27 @@ void init_triton_llvm(py::module &&m) {
       },
       py::keep_alive<0, 2>(), py::call_guard<py::gil_scoped_release>());
 
+  // Parse textual LLVM IR into the same LLVM Module wrapper used by the
+  // Triton-to-LLVM path.  This is intentionally frontend-neutral: experiments
+  // can feed Clang IR and Triton IR through the exact same LLVM optimization
+  // and target-codegen pipeline instead of comparing different toolchains.
+  m.def(
+      "parse_ir",
+      [](const std::string &llvmIR, llvm::LLVMContext &ctx) {
+        std::unique_ptr<llvm::MemoryBuffer> buffer =
+            llvm::MemoryBuffer::getMemBuffer(llvmIR);
+        llvm::SMDiagnostic error;
+        std::unique_ptr<llvm::Module> module =
+            llvm::parseIR(buffer->getMemBufferRef(), error, ctx);
+        if (!module) {
+          throw std::runtime_error(
+              "failed to parse LLVM IR: " + error.getMessage().str() +
+              " at line " + std::to_string(error.getLineNo()));
+        }
+        return module;
+      },
+      py::keep_alive<0, 2>(), py::call_guard<py::gil_scoped_release>());
+
   m.def("attach_datalayout", [](llvm::Module *mod, const std::string triple,
                                 const std::string proc,
                                 const std::string features) {
@@ -808,7 +829,7 @@ void init_triton_llvm(py::module &&m) {
   m.def(
       "translate_to_host_asm",
       [](std::string llvmIR, bool enable_fp_fusion,
-         bool enable_fast_math) -> py::object {
+         bool enable_fast_math, std::string features) -> py::object {
         std::string res;
         {
           // when allow_threads goes out of scope, gil will be released
@@ -827,12 +848,14 @@ void init_triton_llvm(py::module &&m) {
           }
           auto triple = getDefaultTargerOrProcessTriple();
           res = translateLLVMIRToASM(*module, triple,
-                                     llvm::sys::getHostCPUName().str(), "", {},
-                                     enable_fp_fusion, false, enable_fast_math);
+                                     llvm::sys::getHostCPUName().str(), features,
+                                     {}, enable_fp_fusion, false,
+                                     enable_fast_math);
         }
         return py::str(res);
       },
-      ret::take_ownership);
+      ret::take_ownership, py::arg("llvmIR"), py::arg("enable_fp_fusion"),
+      py::arg("enable_fast_math"), py::arg("features") = "");
 
   m.def(
       "translate_to_bc",
