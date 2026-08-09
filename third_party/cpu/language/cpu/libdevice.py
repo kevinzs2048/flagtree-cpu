@@ -155,6 +155,12 @@ def trunc(arg0, _builder=None):
 
 
 @core.extern
+def rint(arg0, _builder=None):
+    """Round to the nearest integer, choosing the even value on a tie."""
+    return core.tensor(_builder.create_round_even(arg0.handle), arg0.type)
+
+
+@core.extern
 def ceil(arg0, _builder=None):
     return core.extern_elementwise(
         "", "", [arg0], {

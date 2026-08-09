@@ -1,3 +1,12 @@
-[submodule "sleef"]
-	path = third_party/sleef
-	url = https://github.com/shibatch/sleef
+[submodule "ports/triton-cpu-3.7.2"]
+	path = ports/triton-cpu-3.7.2
+	url = https://github.com/flagos-ai/flagtree-cpu.git
+	branch = codex/arm-codegen-port-3.7.2-20260810
+[submodule "third_party/FlagGems"]
+	path = third_party/FlagGems
+	url = https://github.com/flagos-ai/FlagGems.git
+	branch = codex/arm-q4-q8-qwen35-20260810
+[submodule "third_party/libtriton_jit"]
+	path = third_party/libtriton_jit
+	url = https://github.com/flagos-ai/libtriton_jit.git
+	branch = codex/cpu-q4-q8-20260810

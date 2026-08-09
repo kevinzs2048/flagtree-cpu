@@ -33,6 +33,10 @@ std::unique_ptr<OperationPass<ModuleOp>>
 createDecomposeFpConversions(bool decomposeBf16Conversions,
                              bool decomposeFp8Conversions);
 std::unique_ptr<OperationPass<ModuleOp>> createOptimizeMasks();
+std::unique_ptr<OperationPass<ModuleOp>> createStripMineVectorLoops();
+std::unique_ptr<OperationPass<ModuleOp>>
+createStripMineVectorLoops(int64_t nativeVectorBits, int64_t unrollFactor,
+                           bool allowFpReductionReassociation);
 
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotProduct();
 std::unique_ptr<OperationPass<ModuleOp>>
@@ -42,6 +46,10 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToAMX();
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertDotToAMX(bool convertInt8, bool convertFp16, bool convertBf16);
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToSVE2I8MM();
+std::unique_ptr<OperationPass<ModuleOp>>
+createConvertDotToSVE2I8MM(bool w4Only);
+std::unique_ptr<OperationPass<ModuleOp>>
+createConvertDotToSVE2I8MM(bool w4Only, bool fixedI8MM);
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToNeonI8MM();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToFMA();
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotGeneric();

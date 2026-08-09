@@ -30,11 +30,37 @@ static inline float32x4_t fast_exp_mlp(float32x4_t x) {
   float32x4_t shift = vdupq_n_f32(12582912.0f);
   float32x4_t ti = vsubq_f32(vaddq_f32(t, shift), shift);
   float32x4_t tf = vsubq_f32(t, ti);
-  float32x4_t p = vaddq_f32(vmulq_f32(tf, vaddq_f32(
-      vmulq_f32(tf, vdupq_n_f32(0.2402265f)), vdupq_n_f32(0.6931472f))),
-      vdupq_n_f32(1.0f));
+  /*
+   * Fifth-order expansion of 2^tf for tf in [-0.5, 0.5].
+   * The previous quadratic has about 0.5% local error after SwiGLU.  These
+   * three extra FMAs are negligible beside the two GEMVs and bring the
+   * approximation below BF16's resolution.
+   */
+  float32x4_t p = vdupq_n_f32(0.0013333558f);
+  p = vfmaq_f32(vdupq_n_f32(0.0096181291f), p, tf);
+  p = vfmaq_f32(vdupq_n_f32(0.0555041087f), p, tf);
+  p = vfmaq_f32(vdupq_n_f32(0.2402265070f), p, tf);
+  p = vfmaq_f32(vdupq_n_f32(0.6931471806f), p, tf);
+  p = vfmaq_f32(vdupq_n_f32(1.0f), p, tf);
   int32x4_t ii = vshlq_n_s32(vcvtq_s32_f32(ti), 23);
   return vreinterpretq_f32_s32(vaddq_s32(vreinterpretq_s32_f32(p), ii));
+}
+
+static inline uint16x4_t fp32_to_bf16_rne(float32x4_t value) {
+  uint32x4_t bits = vreinterpretq_u32_f32(value);
+  uint32x4_t lsb = vandq_u32(vshrq_n_u32(bits, 16), vdupq_n_u32(1));
+  uint32x4_t rounded =
+      vaddq_u32(bits, vaddq_u32(vdupq_n_u32(0x7fff), lsb));
+  return vshrn_n_u32(rounded, 16);
+}
+
+static inline float32x4_t round_to_bf16_f32(float32x4_t value) {
+  return vreinterpretq_f32_u32(vshll_n_u16(fp32_to_bf16_rne(value), 16));
+}
+
+static inline float32x4_t truncate_to_bf16_f32(float32x4_t value) {
+  uint16x4_t bf16 = vshrn_n_u32(vreinterpretq_u32_f32(value), 16);
+  return vreinterpretq_f32_u32(vshll_n_u16(bf16, 16));
 }
 
 /*
@@ -121,15 +147,27 @@ EXPORT void fused_mlp_bf16(
         float32x4_t us = vld1q_f32(up_scale + n * 4);
         gf = vmulq_f32(vmulq_n_f32(gf, x_scale), gs);
         uf = vmulq_f32(vmulq_n_f32(uf, x_scale), us);
+        /*
+         * Match the unfused graph's observable BF16 boundaries:
+         *   gate_proj / up_proj -> BF16
+         *   silu(gate)          -> BF16
+         *   silu(gate) * up     -> BF16
+         */
+        /* sdot_gemv_m1_fused_bf16 currently materializes projections by
+         * truncating FP32 to BF16, so reproduce that boundary exactly. */
+        gf = truncate_to_bf16_f32(gf);
+        uf = truncate_to_bf16_f32(uf);
 
         /* silu(gate) * up */
         float32x4_t exp_neg = fast_exp_mlp(vnegq_f32(gf));
         float32x4_t denom = vaddq_f32(vdupq_n_f32(1.0f), exp_neg);
         float32x4_t recip = vrecpeq_f32(denom);
         recip = vmulq_f32(recip, vrecpsq_f32(denom, recip));
-        float32x4_t result = vmulq_f32(vmulq_f32(gf, recip), uf);
+        recip = vmulq_f32(recip, vrecpsq_f32(denom, recip));
+        float32x4_t silu = round_to_bf16_f32(vmulq_f32(gf, recip));
+        float32x4_t result = vmulq_f32(silu, uf);
 
-        uint16x4_t bf = vshrn_n_u32(vreinterpretq_u32_f32(result), 16);
+        uint16x4_t bf = fp32_to_bf16_rne(result);
         vst1_u16(out_bf16 + n * 4, bf);
       }
     }

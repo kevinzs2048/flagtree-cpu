@@ -93,7 +93,7 @@ def test_tensor_math_fn(vec_lib, dtype_str, math_fn, size, device):
 @pytest.mark.parametrize("math_fn", [
     "acos", "acosh", "asin", "asinh", "atan", "atanh", "cbrt", "ceil", "cos", "cosh", "erf", "exp", "exp2", "expm1",
     "floor", "fmod", "isnan", "isinf", "log", "log1p", "log2", "log10", "pow", "rsqrt", "signbit", "sin", "sinh",
-    "sqrt", "tan", "tanh", "trunc"
+    "rint", "sqrt", "tan", "tanh", "trunc"
 ])
 def test_libdevice_math_fn(vec_lib, dtype_str, math_fn, size, device):
     if not is_cpu():
@@ -139,6 +139,8 @@ def test_libdevice_math_fn(vec_lib, dtype_str, math_fn, size, device):
     # Generate reference output
     if math_fn == "cbrt":
         ref = inputs[0].pow(1 / 3)
+    elif math_fn == "rint":
+        ref = inputs[0].round()
     else:
         ref = getattr(inputs[0], math_fn)(*inputs[1:])
 
@@ -152,8 +154,8 @@ def test_libdevice_math_fn(vec_lib, dtype_str, math_fn, size, device):
 
     # These are not implemented via extern library calls
     native_impls = {
-        "libmvec": {"expm1", "floor", "isnan", "isinf", "rsqrt", "signbit", "sqrt", "trunc"},
-        "libsleef": {"isnan", "isinf", "rsqrt", "signbit"},
+        "libmvec": {"expm1", "floor", "isnan", "isinf", "rint", "rsqrt", "signbit", "sqrt", "trunc"},
+        "libsleef": {"isnan", "isinf", "rint", "rsqrt", "signbit"},
     }
     # These are always implemented with extern library calls
     always_extern = {"ceil", "fmod", "pow"}

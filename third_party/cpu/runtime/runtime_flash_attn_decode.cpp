@@ -37,6 +37,14 @@ static inline float32x4_t bf16x4_to_fp32(const uint16_t *p) {
   return vreinterpretq_f32_u32(vshll_n_u16(vld1_u16(p), 16));
 }
 
+static inline uint16x4_t fp32_to_bf16_rne(float32x4_t value) {
+  uint32x4_t bits = vreinterpretq_u32_f32(value);
+  uint32x4_t lsb = vandq_u32(vshrq_n_u32(bits, 16), vdupq_n_u32(1));
+  uint32x4_t rounded =
+      vaddq_u32(bits, vaddq_u32(vdupq_n_u32(0x7fff), lsb));
+  return vshrn_n_u32(rounded, 16);
+}
+
 /*
  * flash_attn_decode_bf16:
  *   Q:   [num_heads, 1, head_dim] bf16 (contiguous, already squeezed from [B,H,1,D])
@@ -122,9 +130,7 @@ EXPORT void flash_attn_decode_bf16(
     float inv_sum = 1.0f / running_sum;
     for (int64_t d = 0; d < head_dim; d += 4) {
       float32x4_t a = vmulq_n_f32(vld1q_f32(acc + d), inv_sum);
-      uint32x4_t au = vreinterpretq_u32_f32(a);
-      uint16x4_t bf = vshrn_n_u32(au, 16);
-      vst1_u16(out_row + d, bf);
+      vst1_u16(out_row + d, fp32_to_bf16_rne(a));
     }
   }
 }

@@ -75,6 +75,43 @@ def OptimizeMasks : Pass<"triton-cpu-optimize-masks", "mlir::ModuleOp"> {
                              "mlir::triton::cpu::TritonCPUDialect"];
 }
 
+def StripMineVectorLoops
+    : Pass<"triton-cpu-strip-mine-vector-loops", "mlir::ModuleOp"> {
+    let summary = "Strip-mine wide fixed-vector loops to a target CPU width.";
+    let description = [{
+        Rewrites simple scf.for loops whose induction step and rank-one vector
+        width are the same.  The new loop advances by a target-aware narrow
+        width and clones its vector body at that width.  This recovers the
+        rolled-loop shape expected by CPU LLVM backends instead of emitting
+        giant fixed vectors.
+
+        Floating-point reductions are skipped unless reassociation is
+        explicitly enabled.
+    }];
+
+    let options = [
+        Option<"nativeVectorBits", "native-vector-bits",
+               "int64_t", /*default*/"128",
+               "Architectural vector width in bits.">,
+        Option<"unrollFactor", "unroll-factor",
+               "int64_t", /*default*/"4",
+               "Number of architectural vectors per rolled iteration.">,
+        Option<"allowFpReductionReassociation",
+               "allow-fp-reduction-reassociation",
+               "bool", /*default*/"false",
+               "Allow changing floating-point reduction grouping.">,
+    ];
+
+    let constructor = "mlir::triton::cpu::createStripMineVectorLoops()";
+
+    let dependentDialects = ["mlir::arith::ArithDialect",
+                             "mlir::math::MathDialect",
+                             "mlir::scf::SCFDialect",
+                             "mlir::vector::VectorDialect",
+                             "mlir::triton::TritonDialect",
+                             "mlir::triton::cpu::TritonCPUDialect"];
+}
+
 def ConvertDotProduct : Pass<"triton-cpu-convert-dot-product", "mlir::ModuleOp"> {
     let summary = "Convert dot product op.";
     let description = [{
@@ -130,8 +167,22 @@ def ConvertDotToSVE2I8MM
     let summary = "Convert dot product op to SVE2 i8mm intrinsics.";
     let description = [{
         This pass is used to lower int8 matmul operations to SVE2 i8mm
-        instructions (smmla/ummla).
+        instructions (smmla/ummla).  Its W4-only mode lowers only the
+        fixed-width packed Q4 dot pair to NEON SDOT, allowing the same
+        ordinary Triton kernel to run on non-SVE AArch64 targets.  When
+        fixed-i8mm is combined with W4-only, the pass additionally lowers the
+        packed Q4 prefill fusion to fixed-width NEON SMMLA without enabling
+        any SVE operation.
     }];
+
+    let options = [
+        Option<"w4Only", "w4-only",
+               "bool", /*default*/"false",
+               "Only run the packed W4A8 fixed-width SDOT fusion.">,
+        Option<"fixedI8MM", "fixed-i8mm",
+               "bool", /*default*/"false",
+               "With W4-only, also lower packed Q4 prefill to NEON SMMLA.">,
+    ];
 
     let constructor = "mlir::triton::cpu::createConvertDotToSVE2I8MM()";
 

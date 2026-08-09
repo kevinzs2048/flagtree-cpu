@@ -36,6 +36,75 @@ namespace {
 // change the vectorBitWidth and the intrinsics.
 constexpr int vectorBitWidth = 128;
 
+enum class Bf16InputWrapper { ShapeCast, Broadcast };
+
+struct Bf16InputMatch {
+  Value base;
+  SmallVector<std::pair<Bf16InputWrapper, VectorType>> wrappers;
+  VectorType resultType;
+};
+
+// Match an fp32 vector obtained from bf16, allowing shape-only operations to
+// sit above the extension.  Triton commonly emits
+//
+//   vector.shape_cast (arith.extf %bf16)
+//
+// for a 1xK attention dot, whereas the older matcher only accepted an extf
+// after the multiplication.
+static FailureOr<Bf16InputMatch> matchExtendedBf16Input(Value value) {
+  Bf16InputMatch match;
+  auto outerType = dyn_cast<VectorType>(value.getType());
+  if (!outerType || !isFp32(outerType))
+    return failure();
+  match.resultType =
+      VectorType::get(outerType.getShape(), BFloat16Type::get(value.getContext()));
+
+  while (true) {
+    if (auto ext = value.getDefiningOp<arith::ExtFOp>()) {
+      auto inputType = dyn_cast<VectorType>(ext.getIn().getType());
+      if (!inputType || !isBf16(inputType))
+        return failure();
+      match.base = ext.getIn();
+      return match;
+    }
+    if (auto shapeCast = value.getDefiningOp<vector::ShapeCastOp>()) {
+      auto type = dyn_cast<VectorType>(shapeCast.getType());
+      if (!type || !isFp32(type))
+        return failure();
+      match.wrappers.emplace_back(
+          Bf16InputWrapper::ShapeCast,
+          VectorType::get(type.getShape(),
+                          BFloat16Type::get(value.getContext())));
+      value = shapeCast.getSource();
+      continue;
+    }
+    if (auto broadcast = value.getDefiningOp<vector::BroadcastOp>()) {
+      auto type = dyn_cast<VectorType>(broadcast.getType());
+      if (!type || !isFp32(type))
+        return failure();
+      match.wrappers.emplace_back(
+          Bf16InputWrapper::Broadcast,
+          VectorType::get(type.getShape(),
+                          BFloat16Type::get(value.getContext())));
+      value = broadcast.getSource();
+      continue;
+    }
+    return failure();
+  }
+}
+
+static Value materializeBf16Input(Location loc, const Bf16InputMatch &match,
+                                  PatternRewriter &rewriter) {
+  Value value = match.base;
+  for (auto [kind, type] : llvm::reverse(match.wrappers)) {
+    if (kind == Bf16InputWrapper::ShapeCast)
+      value = rewriter.create<vector::ShapeCastOp>(loc, type, value);
+    else
+      value = rewriter.create<vector::BroadcastOp>(loc, type, value);
+  }
+  return value;
+}
+
 // This function is used to identify bf16 dot product (expressed by elementwise
 // multiplication follwed by a sum).
 // For example, the following pattern: tl.sum(a * x[None, :], axis=1)
@@ -65,23 +134,40 @@ bool isBf16DotProduct(vector::MultiDimReductionOp op, bool useHorizontalSum,
   if (op.getKind() != vector::CombiningKind::ADD)
     return false;
 
-  auto extFOp = src.getDefiningOp<arith::ExtFOp>();
+  Value lhs;
+  Value rhs;
+  VectorType lhsTy;
+  VectorType rhsTy;
+  std::optional<Bf16InputMatch> extendedLhs;
+  std::optional<Bf16InputMatch> extendedRhs;
 
-  if (!extFOp || !extFOp->hasOneUse())
-    return false;
+  // Original Triton form: extf(mulf(bf16, bf16)).
+  if (auto extFOp = src.getDefiningOp<arith::ExtFOp>()) {
+    if (!extFOp->hasOneUse())
+      return false;
+    auto mulFOp = extFOp.getIn().getDefiningOp<arith::MulFOp>();
+    if (!mulFOp || !mulFOp->hasOneUse())
+      return false;
+    lhs = mulFOp.getLhs();
+    rhs = mulFOp.getRhs();
+    lhsTy = dyn_cast<VectorType>(lhs.getType());
+    rhsTy = dyn_cast<VectorType>(rhs.getType());
+  } else {
+    // Attention form: mulf(extf(bf16), shape_cast(extf(bf16))).
+    auto mulFOp = src.getDefiningOp<arith::MulFOp>();
+    if (!mulFOp || !mulFOp->hasOneUse())
+      return false;
+    auto lhsMatch = matchExtendedBf16Input(mulFOp.getLhs());
+    auto rhsMatch = matchExtendedBf16Input(mulFOp.getRhs());
+    if (failed(lhsMatch) || failed(rhsMatch))
+      return false;
+    extendedLhs = *lhsMatch;
+    extendedRhs = *rhsMatch;
+    lhsTy = extendedLhs->resultType;
+    rhsTy = extendedRhs->resultType;
+  }
 
-  auto mulFOp = extFOp.getIn().getDefiningOp<arith::MulFOp>();
-
-  if (!mulFOp || !mulFOp->hasOneUse())
-    return false;
-
-  Value lhs = mulFOp.getLhs();
-  Value rhs = mulFOp.getRhs();
-
-  auto lhsTy = cast<VectorType>(lhs.getType());
-  auto rhsTy = cast<VectorType>(rhs.getType());
-
-  if (!isBf16(lhsTy) || !isBf16(rhsTy))
+  if (!lhsTy || !rhsTy || !isBf16(lhsTy) || !isBf16(rhsTy))
     return false;
 
   const int lanes =
@@ -102,6 +188,11 @@ bool isBf16DotProduct(vector::MultiDimReductionOp op, bool useHorizontalSum,
   // TODO: masking is not currrently supported
   if (kVal % lanes != 0)
     return false;
+
+  if (extendedLhs) {
+    lhs = materializeBf16Input(op.getLoc(), *extendedLhs, rewriter);
+    rhs = materializeBf16Input(op.getLoc(), *extendedRhs, rewriter);
+  }
 
   if (outNum == 1) {
     matInput = lhs;

@@ -64,6 +64,8 @@ public:
     // TLE-CPU ops pass through to LLVM lowering (pointer+scalar args only)
     addLegalOp<triton::cpu::SdotGemvOp>();
     addLegalOp<triton::cpu::SdotGemvFusedBf16Op>();
+    addLegalOp<triton::cpu::SdotGemvWholeOp>();
+    addLegalOp<triton::cpu::SdotGemvPrequantOp>();
     addLegalOp<triton::cpu::SdotPackWeightsOp>();
     addLegalOp<triton::cpu::RmsNormOp>();
     addLegalOp<triton::cpu::SwigluOp>();
@@ -254,6 +256,7 @@ struct ConvertElementwiseOps
     patterns.add<OpTypeConversion<math::ErfOp>>(typeConverter, context);
     patterns.add<OpTypeConversion<math::CbrtOp>>(typeConverter, context);
     patterns.add<OpTypeConversion<math::TruncOp>>(typeConverter, context);
+    patterns.add<OpTypeConversion<math::RoundEvenOp>>(typeConverter, context);
 
     patterns.add<OpTypeConversion<triton::BitcastOp, arith::BitcastOp>>(
         typeConverter, context);

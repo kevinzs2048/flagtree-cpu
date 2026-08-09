@@ -1,0 +1,53 @@
+diff --git a/vllm_fl/cpu_env.py b/vllm_fl/cpu_env.py
+--- a/vllm_fl/cpu_env.py
++++ b/vllm_fl/cpu_env.py
+@@ -58,8 +58,12 @@ def int8_enabled() -> bool:
+     return parse_bool("FL_CPU_INT8", False)
+
+
+-_INT4_BACKENDS = frozenset({"tleraw"})
+-_INT8_BACKENDS = frozenset({"tleraw", "kleidiai", "torchpack"})
++_INT4_BACKENDS = frozenset(
++    {"tleraw", "triton_codegen", "libtriton_jit"}
++)
++_INT8_BACKENDS = frozenset(
++    {"tleraw", "kleidiai", "torchpack", "libtriton_jit"}
++)
+
+
+ def int4_backend() -> str:
+diff --git a/vllm_fl/__init__.py b/vllm_fl/__init__.py
+--- a/vllm_fl/__init__.py
++++ b/vllm_fl/__init__.py
+@@ -173,16 +173,32 @@ def register_model():
+         quant, backend = resolved
+         if quant == "int4":
+             if backend == "tleraw":
+                 from vllm_fl.ops.cpu_int4_tleraw import enable_int4
+                 enable_int4()
++            elif backend == "triton_codegen":
++                from flag_gems.runtime.backend._arm.q4 import (
++                    enable_vllm_quant_codegen,
++                )
++                enable_vllm_quant_codegen()
++            elif backend == "libtriton_jit":
++                from flag_gems.runtime.backend._arm.q4 import (
++                    enable_vllm_quant_codegen,
++                )
++                enable_vllm_quant_codegen(runtime="libtriton_jit")
+             return
+         # quant == "int8"
+         if backend == "tleraw":
+             from vllm_fl.ops.cpu_int8_tleraw import enable_int8
+         elif backend == "kleidiai":
+             from vllm_fl.ops.cpu_int8_kai import enable_int8
+         elif backend == "torchpack":
+             from vllm_fl.ops.cpu_int8_pack import enable_int8
++        elif backend == "libtriton_jit":
++            from flag_gems.runtime.backend._arm.q4 import (
++                enable_vllm_quant_codegen,
++            )
++            enable_vllm_quant_codegen(runtime="libtriton_jit")
++            return
+         enable_int8()
+         return

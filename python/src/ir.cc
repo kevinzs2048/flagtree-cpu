@@ -1634,6 +1634,10 @@ void init_triton_ir(py::module &&m) {
            [](TritonOpBuilder &self, Value &val) -> Value {
              return self.create<math::TruncOp>(val);
            })
+      .def("create_round_even",
+           [](TritonOpBuilder &self, Value &val) -> Value {
+             return self.create<math::RoundEvenOp>(val);
+           })
       .def("create_reduce",
            [](TritonOpBuilder &self, std::vector<Value> operands, int axis)
                -> OpState { return self.create<ReduceOp>(operands, axis); })
@@ -1744,6 +1748,171 @@ void init_triton_ir(py::module &&m) {
       .def("create_proton_record",
            [](TritonOpBuilder &self, bool isStart, int32_t regionId) -> void {
              self.create<mlir::triton::proton::RecordOp>(isStart, regionId);
+           })
+      // ARM64 TLE operations.  Keep these builder bindings on the core
+      // TritonOpBuilder: tle_ops.py traces inside an ordinary @triton.jit
+      // function and therefore cannot see methods installed on a separate
+      // plugin-local Python class.
+      .def("create_cpu_fused_decode_step",
+           [](TritonOpBuilder &self, Value &tokId, Value &pos, Value &embed,
+              Value &layerPtrs, Value &kCache, Value &vCache, Value &ropeCos,
+              Value &ropeSin, Value &finalNorm, Value &lmPacked,
+              Value &lmScale, Value &hidden, Value &headDim, Value &numHeads,
+              Value &numKvHeads, Value &intermediate, Value &vocab,
+              Value &numLayers, Value &maxSeq, float rmsEps) -> Value {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             auto op = self.create<cpu::FusedDecodeStepOp>(
+                 tokId, pos, embed, layerPtrs, kCache, vCache, ropeCos, ropeSin,
+                 finalNorm, lmPacked, lmScale, hidden, headDim, numHeads,
+                 numKvHeads, intermediate, vocab, numLayers, maxSeq,
+                 self.getBuilder().getF32FloatAttr(rmsEps));
+             return op.getNextToken();
+           })
+      .def("create_cpu_fused_transformer_layer",
+           [](TritonOpBuilder &self, Value &hidden, Value &wq, Value &wk,
+              Value &wv, Value &wo, Value &wqScale, Value &wkScale,
+              Value &wvScale, Value &woScale, Value &qNorm, Value &kNorm,
+              Value &cosEmb, Value &sinEmb, Value &kCache, Value &vCache,
+              Value &cachePos, Value &maxSeq, Value &gate, Value &up,
+              Value &down, Value &gateScale, Value &upScale, Value &downScale,
+              Value &inputNorm, Value &postNorm, Value &hiddenDim,
+              Value &headDim, Value &numHeads, Value &numKvHeads,
+              Value &intermediate, float rmsEps) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::FusedTransformerLayerOp>(
+                 hidden, wq, wk, wv, wo, wqScale, wkScale, wvScale, woScale,
+                 qNorm, kNorm, cosEmb, sinEmb, kCache, vCache, cachePos, maxSeq,
+                 gate, up, down, gateScale, upScale, downScale, inputNorm,
+                 postNorm, hiddenDim, headDim, numHeads, numKvHeads,
+                 intermediate, self.getBuilder().getF32FloatAttr(rmsEps));
+           })
+      .def("create_cpu_fused_mlp",
+           [](TritonOpBuilder &self, Value &x, Value &gatePacked,
+              Value &upPacked, Value &gateScale, Value &upScale, Value &out,
+              Value &k, Value &n, Value &nStart, Value &nCount) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::FusedMlpOp>(x, gatePacked, upPacked, gateScale,
+                                          upScale, out, k, n, nStart, nCount);
+           })
+      .def("create_cpu_flash_attn_decode",
+           [](TritonOpBuilder &self, Value &q, Value &k, Value &v, Value &out,
+              Value &seqLen, Value &headDim, float smScale, Value &numHeads,
+              Value &numKvHeads, Value &strideKn, Value &strideVn) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::FlashAttnDecodeOp>(
+                 q, k, v, out, seqLen, headDim,
+                 self.getBuilder().getF32FloatAttr(smScale), numHeads,
+                 numKvHeads, strideKn, strideVn);
+           })
+      .def("create_cpu_sme_attn_prefill",
+           [](TritonOpBuilder &self, Value &q, Value &k, Value &v, Value &out,
+              Value &m, Value &nKv, Value &headDim, float smScale,
+              Value &numHeads, Value &numKvHeads, Value &causal) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SmeAttnPrefillOp>(
+                 q, k, v, out, m, nKv, headDim,
+                 self.getBuilder().getF32FloatAttr(smScale), numHeads,
+                 numKvHeads, causal);
+           })
+      .def("create_cpu_rms_norm",
+           [](TritonOpBuilder &self, Value &x, Value &weight, Value &out,
+              Value &d, float eps) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::RmsNormOp>(
+                 x, weight, out, d, self.getBuilder().getF32FloatAttr(eps));
+           })
+      .def("create_cpu_swiglu",
+           [](TritonOpBuilder &self, Value &gate, Value &up, Value &out,
+              Value &n) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SwigluOp>(gate, up, out, n);
+           })
+      .def("create_cpu_sdot_gemv",
+           [](TritonOpBuilder &self, Value &a, Value &bPacked, Value &c,
+              Value &k, Value &n) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SdotGemvOp>(a, bPacked, c, k, n);
+           })
+      .def("create_cpu_sdot_gemv_fused_bf16",
+           [](TritonOpBuilder &self, Value &x, Value &bPacked,
+              Value &weightScale, Value &out, Value &k, Value &n,
+              Value &nStart, Value &nCount) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SdotGemvFusedBf16Op>(x, bPacked, weightScale,
+                                                   out, k, n, nStart, nCount);
+           })
+      .def("create_cpu_sdot_gemv_whole",
+           [](TritonOpBuilder &self, Value &x, Value &bPacked,
+              Value &weightScale, Value &out, Value &k, Value &n,
+              Value &tileN) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SdotGemvWholeOp>(x, bPacked, weightScale, out,
+                                              k, n, tileN);
+           })
+      .def("create_cpu_sdot_gemv_prequant",
+           [](TritonOpBuilder &self, Value &xQ, Value &xScale,
+              Value &bPacked, Value &weightScale, Value &out, Value &k,
+              Value &n, Value &nStart, Value &nCount) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SdotGemvPrequantOp>(
+                 xQ, xScale, bPacked, weightScale, out, k, n, nStart,
+                 nCount);
+           })
+      .def("create_cpu_sdot_pack_weights",
+           [](TritonOpBuilder &self, Value &b, Value &bPacked, Value &k,
+              Value &n) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SdotPackWeightsOp>(b, bPacked, k, n);
+           })
+      .def("create_cpu_sme_gemm",
+           [](TritonOpBuilder &self, Value &aPacked, Value &bPacked, Value &c,
+              Value &mp, Value &np, Value &k4) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SmeGemmOp>(aPacked, bPacked, c, mp, np, k4);
+           })
+      .def("create_cpu_smmla_uk",
+           [](TritonOpBuilder &self, Value &aPacked, Value &wPacked, Value &c,
+              Value &xScale, Value &wScale, Value &k8, Value &mp, Value &n,
+              Value &mp0, Value &np0) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SmmlaUkOp>(aPacked, wPacked, c, xScale, wScale,
+                                         k8, mp, n, mp0, np0);
+           })
+      .def("create_cpu_sme_uk",
+           [](TritonOpBuilder &self, Value &aPacked, Value &bPacked, Value &c,
+              Value &k4, Value &np, Value &mt, Value &nt) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SmeUkOp>(aPacked, bPacked, c, k4, np, mt, nt);
+           })
+      .def("create_cpu_sdot_gemv_uk",
+           [](TritonOpBuilder &self, Value &a, Value &b, Value &c, Value &k4,
+              Value &n4, Value &bn4, Value &block) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SdotGemvUkOp>(a, b, c, k4, n4, bn4, block);
+           })
+      .def("create_cpu_swiglu_uk",
+           [](TritonOpBuilder &self, Value &gate, Value &up, Value &out,
+              Value &offset, Value &n) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::SwigluUkOp>(gate, up, out, offset, n);
+           })
+      .def("create_cpu_rmsnorm_uk",
+           [](TritonOpBuilder &self, Value &x, Value &weight, Value &out,
+              Value &d, Value &row) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::RmsnormUkOp>(x, weight, out, d, row);
+           })
+      .def("create_cpu_residual_uk",
+           [](TritonOpBuilder &self, Value &residual, Value &x, Value &offset,
+              Value &n) {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             self.create<cpu::ResidualUkOp>(residual, x, offset, n);
+           })
+      .def("create_cpu_neon_sdot",
+           [](TritonOpBuilder &self, Value &acc, Value &a, Value &b) -> Value {
+             self.getContext()->getOrLoadDialect<cpu::TritonCPUDialect>();
+             return self.create<cpu::NeonSdotTensorOp>(acc.getType(), acc, a,
+                                                       b);
            });
 
   py::class_<PassManager>(m, "pass_manager", py::module_local())

@@ -1,0 +1,56 @@
+diff --git a/vllm_fl/__init__.py b/vllm_fl/__init__.py
+--- a/vllm_fl/__init__.py
++++ b/vllm_fl/__init__.py
+@@ -165,10 +165,17 @@ def register_model():
+             elif int8_backend == "kleidiai":
+                 from vllm_fl.ops.cpu_int8_kai import enable_int8
++            elif int8_backend == "libtriton_jit":
++                from flag_gems.runtime.backend._arm.q4 import (
++                    enable_vllm_quant_codegen,
++                )
++                enable_vllm_quant_codegen(runtime="libtriton_jit")
++                return
+             elif int8_backend == "torchpack":
+                 from vllm_fl.ops.cpu_int8_pack import enable_int8
+             else:
+                 raise ValueError(
+-                    "FL_CPU_INT8_BACKEND must be 'tleraw', 'kleidiai' or 'torchpack'"
++                    "FL_CPU_INT8_BACKEND must be 'tleraw', 'kleidiai', "
++                    "'libtriton_jit' or 'torchpack'"
+                 )
+
+             enable_int8()
+@@ -158,12 +158,28 @@ def register_model():
+         if enabled not in {"0", "1", "false", "true"}:
+             raise ValueError("FL_CPU_INT4 must be one of: 0, 1, false, true")
+         if enabled in {"1", "true"}:
+             backend = os.environ.get("FL_CPU_INT4_BACKEND", "tleraw").lower()
+-            if backend != "tleraw":
+-                raise ValueError("FL_CPU_INT4_BACKEND must be 'tleraw'")
+-            from vllm_fl.ops.cpu_int4_tleraw import enable_int4
+-
+-            enable_int4()
++            if backend == "tleraw":
++                from vllm_fl.ops.cpu_int4_tleraw import enable_int4
++
++                enable_int4()
++            elif backend == "triton_codegen":
++                from flag_gems.runtime.backend._arm.q4 import (
++                    enable_vllm_q4_codegen,
++                )
++
++                enable_vllm_q4_codegen()
++            elif backend == "libtriton_jit":
++                from flag_gems.runtime.backend._arm.q4 import (
++                    enable_vllm_q4_codegen,
++                )
++
++                enable_vllm_q4_codegen(runtime="libtriton_jit")
++            else:
++                raise ValueError(
++                    "FL_CPU_INT4_BACKEND must be 'tleraw', "
++                    "'triton_codegen', or 'libtriton_jit'"
++                )
+         else:
+             logger.info("[vllm_fl] FL_CPU_INT4=0 -> bf16 (int4 op skipped)")
+         return

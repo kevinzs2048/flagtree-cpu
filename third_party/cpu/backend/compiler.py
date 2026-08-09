@@ -120,6 +120,7 @@ class CPUBackend(BaseBackend):
         self.cpu_arch = platform.machine()
         self.cpu_name = llvm.get_cpu_name()
         self.cpu_features = llvm.get_cpu_features()
+        self.sve_vector_bits = 0
         # LLVM get_cpu_features() on aarch64 misses several features (e.g. i8mm, bf16).
         # Supplement from /proc/cpuinfo 'Features' line on Linux.
         if platform.system() == "Linux" and self.cpu_arch == "aarch64":
@@ -130,6 +131,7 @@ class CPUBackend(BaseBackend):
                             proc_feats = set(line.split(":")[1].split())
                             _feat_map = {
                                 "i8mm": "i8mm", "svei8mm": "i8mm",
+                                "asimddp": "dotprod",
                                 "bf16": "bf16", "svebf16": "bf16", "asimdbf16": "bf16",
                             }
                             for pf, lf in _feat_map.items():
@@ -137,6 +139,19 @@ class CPUBackend(BaseBackend):
                                     self.cpu_features.add(lf)
                             break
             except OSError:
+                pass
+            # The first rolled i8mm microkernel slice uses one 128-bit SMMLA
+            # segment per scalable value.  Query the process SVE vector length
+            # and only enable it when vscale == 1; silently using just the low
+            # segment on a wider-SVE machine would be a correctness bug.
+            try:
+                import ctypes
+                _PR_SVE_GET_VL = 51
+                _PR_SVE_VL_LEN_MASK = 0xFFFF
+                _vl = ctypes.CDLL(None).prctl(_PR_SVE_GET_VL, 0, 0, 0, 0)
+                if _vl >= 0:
+                    self.sve_vector_bits = (_vl & _PR_SVE_VL_LEN_MASK) * 8
+            except (AttributeError, OSError):
                 pass
         # macOS (Darwin) has no /proc/cpuinfo; query sysctl hw.optional.arm.FEAT_*.
         # Note: we deliberately do NOT add sve/sve2 here -- Apple M-series cores
@@ -200,6 +215,11 @@ class CPUBackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_licm(pm)
         passes.common.add_symbol_dce(pm)
+        # Triton 3.7 represents ``tl.range(loop_unroll_factor=...)`` as a
+        # loop attribute.  CPU must run the same TTIR unroll pass as the
+        # NVIDIA and AMD backends; otherwise the hint is silently ignored
+        # and packed SDOT kernels lose their intended software pipeline.
+        passes.ttir.add_loop_unroll(pm)
         pm.run(mod)
         return mod
 
@@ -235,6 +255,28 @@ class CPUBackend(BaseBackend):
         # TTCIR -> Target TTCIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
+        enable_strip_mine = os.getenv(
+            "TRITON_CPU_STRIP_MINE_VECTOR_LOOPS", "0"
+        ).upper() in ("1", "ON", "YES", "TRUE", "Y")
+        if enable_strip_mine:
+            native_vector_bits = int(
+                os.getenv(
+                    "TRITON_CPU_NATIVE_VECTOR_BITS",
+                    str(self.sve_vector_bits or 128),
+                )
+            )
+            vector_unroll = int(
+                os.getenv("TRITON_CPU_VECTOR_UNROLL_FACTOR", "4")
+            )
+            allow_reassociation = os.getenv(
+                "TRITON_CPU_STRIP_MINE_FP_REDUCTIONS", "0"
+            ).upper() in ("1", "ON", "YES", "TRUE", "Y")
+            cpu.passes.ttcpuir.add_strip_mine_vector_loops(
+                pm,
+                native_vector_bits,
+                vector_unroll,
+                allow_reassociation,
+            )
         cpu.passes.ttcpuir.add_triton_cpu_canonicalizer(pm)
         cpu.passes.ttcpuir.add_optimize_masks(pm)
         passes.common.add_canonicalizer(pm)
@@ -244,8 +286,16 @@ class CPUBackend(BaseBackend):
             cpu.passes.ttcpuir.add_convert_dot_to_ukernels(pm, ukernels)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
-        convert_bf16_dot_product = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
-                                    and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features)
+        disable_bf16_dot = os.getenv(
+            "TRITON_CPU_DISABLE_BF16_DOT", "0"
+        ).upper() in ("1", "ON", "YES", "TRUE", "Y")
+        convert_bf16_dot_product = (
+            not disable_bf16_dot
+            and self.cpu_arch in ("aarch64", "armv8", "arm64")
+            and "fp-armv8" in self.cpu_features
+            and "neon" in self.cpu_features
+            and "bf16" in self.cpu_features
+        )
         if convert_bf16_dot_product:
             use_horizontal_sum = os.getenv("TRITON_CPU_DOT_PROD_HORIZ_SUM", "1") == "1"
             cpu.passes.ttcpuir.add_convert_dot_product(pm, use_horizontal_sum)
@@ -254,17 +304,37 @@ class CPUBackend(BaseBackend):
         )
         convert_sve2_i8mm = (not disable_sve2_i8mm and
                              (self.cpu_arch == "aarch64" or self.cpu_arch == "armv8") and
-                             ("sve2" in self.cpu_features))
-        if convert_sve2_i8mm:
-            cpu.passes.ttcpuir.add_convert_dot_to_sve2_i8mm(pm)
-        # NEON i8mm (SMMLA): ARM cores with NEON i8mm but no SVE2 (e.g. Apple M).
-        # Opt-in via TRITON_CPU_NEON_I8MM=1 while the pass is under development.
+                             ("sve2" in self.cpu_features) and
+                             ("i8mm" in self.cpu_features) and
+                             self.sve_vector_bits == 128)
+        enable_fixed_i8mm = os.getenv("TRITON_CPU_FIXED_I8MM", "1").upper() in (
+            "1", "ON", "YES", "TRUE", "Y",
+        )
+        convert_fixed_i8mm = (enable_fixed_i8mm and not convert_sve2_i8mm and
+                              (self.cpu_arch in ("aarch64", "armv8", "arm64")) and
+                              ("dotprod" in self.cpu_features) and
+                              ("i8mm" in self.cpu_features))
         enable_neon_i8mm = os.getenv("TRITON_CPU_NEON_I8MM", "0").upper() in (
             "1", "ON", "YES", "TRUE", "Y",
         )
         convert_neon_i8mm = (enable_neon_i8mm and not convert_sve2_i8mm and
                              (self.cpu_arch in ("aarch64", "armv8", "arm64")) and
                              ("i8mm" in self.cpu_features))
+        if convert_sve2_i8mm:
+            cpu.passes.ttcpuir.add_convert_dot_to_sve2_i8mm(pm, False, False)
+        elif (self.cpu_arch in ("aarch64", "armv8", "arm64") and
+              ("dotprod" in self.cpu_features)):
+            # Packed W4 decode only needs fixed-width SDOT.  Running the
+            # pass in W4-only mode makes the same ordinary Triton source
+            # available on Apple M-series and other non-SVE AArch64 CPUs
+            # without permitting SVE lowering.  On explicitly enabled i8mm
+            # targets, fixed_i8mm additionally admits only the NEON Q4
+            # prefill fusion.
+            cpu.passes.ttcpuir.add_convert_dot_to_sve2_i8mm(
+                pm, True, convert_fixed_i8mm
+            )
+        # NEON i8mm (SMMLA): ARM cores with NEON i8mm but no SVE2 (e.g. Apple M).
+        # Opt-in via TRITON_CPU_NEON_I8MM=1 while the pass is under development.
         if convert_neon_i8mm:
             cpu.passes.ttcpuir.add_convert_dot_to_neon_i8mm(pm)
         if 'amx-tile' in self.cpu_features:
@@ -408,4 +478,13 @@ class CPUBackend(BaseBackend):
         # Right now it would only return a simple string like "x86_64" or "aarch64".
         import platform
 
-        return f"{platform.machine()}"
+        features = ",".join(sorted(self.cpu_features))
+        sdot_prefetch = os.getenv("TRITON_CPU_SDOT_PREFETCH_DISTANCE", "0")
+        sdot_prefetch_stride = os.getenv(
+            "TRITON_CPU_SDOT_PREFETCH_GROUP_STRIDE", "4"
+        )
+        return (
+            f"{platform.machine()}-{self.cpu_name}-{features}"
+            f"-sve{self.sve_vector_bits}"
+            f"-sdotpf{sdot_prefetch}x{sdot_prefetch_stride}"
+        )

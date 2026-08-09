@@ -141,27 +141,49 @@ def fused_transformer_layer(
 
 
 @builtin
-def fused_mlp(x_ptr, gate_packed_ptr, up_packed_ptr,
-               gate_scale_ptr, up_scale_ptr, out_ptr, K, N, _builder=None):
-    """TLE-CPU: Fused MLP = gate SDOT GEMV + up SDOT GEMV + SWIGLU.
+def fused_mlp(
+    x_ptr,
+    gate_packed_ptr,
+    up_packed_ptr,
+    gate_scale_ptr,
+    up_scale_ptr,
+    out_ptr,
+    K,
+    N,
+    n_start,
+    n_count,
+    _builder=None,
+):
+    """TLE-CPU: compiler-lowered gate/up SDOT GEMV plus SwiGLU.
 
     Single OMP region replaces 3 separate ops (gate_proj, up_proj, silu_and_mul).
 
     Args:
         x_ptr: [K] bf16 activation
-        gate_packed_ptr, up_packed_ptr: [K/4, N/4, 16] int8 SDOT-packed weights
+        gate_packed_ptr, up_packed_ptr: compiler-packed 32-output SDOT
+            microtiles, [N/32, K/4, 8, 16]
         gate_scale_ptr, up_scale_ptr: [N] fp32 per-channel weight scales
         out_ptr: [N] bf16 output
-        K, N: dimensions
+        K, N: full padded dimensions
+        n_start, n_count: output range owned by this Triton program
     """
-    K_raw = _unwrap_if_constexpr(K)
-    N_raw = _unwrap_if_constexpr(N)
-    K_val = K_raw.handle if hasattr(K_raw, 'handle') else _builder.get_int64(K_raw)
-    N_val = N_raw.handle if hasattr(N_raw, 'handle') else _builder.get_int64(N_raw)
+    def _i64(value):
+        raw = _unwrap_if_constexpr(value)
+        if hasattr(raw, "handle"):
+            handle = raw.handle
+            try:
+                handle = _builder.create_int_cast(
+                    handle, _builder.get_int64_ty(), True
+                )
+            except Exception:
+                pass
+            return handle
+        return _builder.get_int64(raw)
+
     _builder.create_cpu_fused_mlp(
         x_ptr.handle, gate_packed_ptr.handle, up_packed_ptr.handle,
         gate_scale_ptr.handle, up_scale_ptr.handle, out_ptr.handle,
-        K_val, N_val)
+        _i64(K), _i64(N), _i64(n_start), _i64(n_count))
     return None
 
 
@@ -219,6 +241,47 @@ def flash_attn_decode(q_ptr, k_ptr, v_ptr, out_ptr,
 
 
 @builtin
+def sme_attn_prefill(q_ptr, k_ptr, v_ptr, out_ptr,
+                     M, n_kv, head_dim, sm_scale,
+                     num_heads, num_kv_heads, causal=1, _builder=None):
+    """TLE-CPU: M>1 prefill attention via ARM SME (BFMOPA), fully fused.
+
+    QK^T (SME) -> scale + optional causal mask + row softmax (NEON) -> P*V (SME).
+    bf16 lossless (f32 accumulation). Decode (M=1) stays on flash_attn_decode.
+
+    Args:
+        q_ptr:   [num_heads,    M,    head_dim] bf16
+        k_ptr:   [num_kv_heads, n_kv, head_dim] bf16
+        v_ptr:   [num_kv_heads, n_kv, head_dim] bf16
+        out_ptr: [num_heads,    M,    head_dim] bf16
+        M, n_kv, head_dim: dimensions
+        sm_scale: softmax scale (typically head_dim**-0.5)
+        num_heads, num_kv_heads: head counts (GQA support)
+        causal: 1 to apply causal mask, 0 for full attention
+    """
+    def _i64(v):
+        raw = _unwrap_if_constexpr(v)
+        if hasattr(raw, 'handle'):
+            handle = raw.handle
+            i64_ty = _builder.get_int64_ty()
+            try:
+                handle = _builder.create_int_cast(handle, i64_ty, True)
+            except Exception:
+                pass
+            return handle
+        return _builder.get_int64(raw)
+
+    sm_scale_val = _unwrap_if_constexpr(sm_scale)
+    sm_f = 0.0 if hasattr(sm_scale_val, 'handle') else float(sm_scale_val)
+
+    _builder.create_cpu_sme_attn_prefill(
+        q_ptr.handle, k_ptr.handle, v_ptr.handle, out_ptr.handle,
+        _i64(M), _i64(n_kv), _i64(head_dim), sm_f,
+        _i64(num_heads), _i64(num_kv_heads), _i64(causal))
+    return None
+
+
+@builtin
 def rms_norm(x_ptr, weight_ptr, out_ptr, D, eps, _builder=None):
     """TLE-CPU: RMSNorm — out = (x / rms(x)) * weight.
 
@@ -259,25 +322,135 @@ def swiglu(gate_ptr, up_ptr, out_ptr, N, _builder=None):
 
 
 @builtin
-def sdot_gemv_fused_bf16(x_ptr, b_packed_ptr, w_scale_ptr, out_ptr, K, N, _builder=None):
-    """TLE-CPU: Fused BF16→INT8 quant + SDOT GEMV + dequant→BF16.
+def sdot_gemv_fused_bf16(
+    x_ptr,
+    b_packed_ptr,
+    w_scale_ptr,
+    out_ptr,
+    K,
+    N,
+    n_start,
+    n_count,
+    _builder=None,
+):
+    """TLE-CPU: Fused activation quantization + packed INT8 SDOT GEMV.
 
     Single call replaces: abs().max() → div → clamp → to(int8) → gemv → mul(scale) → to(bf16)
 
     Args:
-        x_ptr: pointer to [K] bfloat16 activation
+        x_ptr: pointer to [K] bfloat16 or float32 activation
         b_packed_ptr: pointer to pre-packed int8 weights (SDOT format)
         w_scale_ptr: pointer to [N] float32 per-channel weight scale
-        out_ptr: pointer to [N] bfloat16 output
-        K, N: dimensions
+        out_ptr: pointer to [N] matching bfloat16 or float32 output
+        K, N: full matrix dimensions
+        n_start, n_count: output range owned by this Triton program
     """
-    K_raw = _unwrap_if_constexpr(K)
-    N_raw = _unwrap_if_constexpr(N)
-    K_val = K_raw.handle if hasattr(K_raw, 'handle') else _builder.get_int64(K_raw)
-    N_val = N_raw.handle if hasattr(N_raw, 'handle') else _builder.get_int64(N_raw)
+    def _i64(value):
+        raw = _unwrap_if_constexpr(value)
+        if hasattr(raw, "handle"):
+            handle = raw.handle
+            try:
+                handle = _builder.create_int_cast(
+                    handle, _builder.get_int64_ty(), True
+                )
+            except Exception:
+                pass
+            return handle
+        return _builder.get_int64(raw)
+
     _builder.create_cpu_sdot_gemv_fused_bf16(
         x_ptr.handle, b_packed_ptr.handle, w_scale_ptr.handle,
-        out_ptr.handle, K_val, N_val)
+        out_ptr.handle, _i64(K), _i64(N), _i64(n_start), _i64(n_count))
+    return None
+
+
+@builtin
+def sdot_gemv_whole(
+    x_ptr,
+    b_packed_ptr,
+    w_scale_ptr,
+    out_ptr,
+    K,
+    N,
+    TILE_N,
+    _builder=None,
+):
+    """Whole compiler-generated W8 projection with one activation quantization.
+
+    ``b_packed_ptr`` uses blocked SDOT layout
+    ``[N/TILE_N, K/4, TILE_N/4, 16]``. The lowering expands this leaf into
+    activation quantization, a rolled output-tile loop and native SDOT
+    intrinsics; it does not call a runtime GEMV.
+    """
+
+    def _i64(value):
+        raw = _unwrap_if_constexpr(value)
+        if hasattr(raw, "handle"):
+            handle = raw.handle
+            try:
+                handle = _builder.create_int_cast(
+                    handle, _builder.get_int64_ty(), True
+                )
+            except Exception:
+                pass
+            return handle
+        return _builder.get_int64(raw)
+
+    _builder.create_cpu_sdot_gemv_whole(
+        x_ptr.handle,
+        b_packed_ptr.handle,
+        w_scale_ptr.handle,
+        out_ptr.handle,
+        _i64(K),
+        _i64(N),
+        _i64(TILE_N),
+    )
+    return None
+
+
+@builtin
+def sdot_gemv_prequant(
+    x_q_ptr,
+    x_scale_ptr,
+    b_packed_ptr,
+    w_scale_ptr,
+    out_ptr,
+    K,
+    N,
+    n_start,
+    n_count,
+    _builder=None,
+):
+    """TLE-CPU: Compiler-generated packed SDOT GEMV from shared INT8 x.
+
+    Activation quantization is intentionally separate and can be expressed as
+    an ordinary Triton kernel. Every output program then reuses ``x_q`` and
+    ``x_scale`` rather than rescanning and requantizing the FP32/BF16 input.
+    """
+    def _i64(value):
+        raw = _unwrap_if_constexpr(value)
+        if hasattr(raw, "handle"):
+            handle = raw.handle
+            try:
+                handle = _builder.create_int_cast(
+                    handle, _builder.get_int64_ty(), True
+                )
+            except Exception:
+                pass
+            return handle
+        return _builder.get_int64(raw)
+
+    _builder.create_cpu_sdot_gemv_prequant(
+        x_q_ptr.handle,
+        x_scale_ptr.handle,
+        b_packed_ptr.handle,
+        w_scale_ptr.handle,
+        out_ptr.handle,
+        _i64(K),
+        _i64(N),
+        _i64(n_start),
+        _i64(n_count),
+    )
     return None
 
 

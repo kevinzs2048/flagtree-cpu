@@ -107,6 +107,13 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
   m.def("add_optimize_masks", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createOptimizeMasks());
   });
+  m.def("add_strip_mine_vector_loops",
+        [](mlir::PassManager &pm, int64_t nativeVectorBits,
+           int64_t unrollFactor, bool allowFpReductionReassociation) {
+          pm.addPass(mlir::triton::cpu::createStripMineVectorLoops(
+              nativeVectorBits, unrollFactor,
+              allowFpReductionReassociation));
+        });
   m.def("add_convert_dot_product", [](mlir::PassManager &pm,
                                       bool useHorizontalSum) {
     pm.addPass(mlir::triton::cpu::createConvertDotProduct(useHorizontalSum));
@@ -123,8 +130,10 @@ void init_triton_cpu_passes_ttcpuir(py::module &&m) {
     pm.addPass(mlir::triton::cpu::createConvertDotToAMX(
         convertInt8, convertFp16, convertBf16));
   });
-  m.def("add_convert_dot_to_sve2_i8mm", [](mlir::PassManager &pm) {
-    pm.addPass(mlir::triton::cpu::createConvertDotToSVE2I8MM());
+  m.def("add_convert_dot_to_sve2_i8mm",
+        [](mlir::PassManager &pm, bool w4Only, bool fixedI8MM) {
+    pm.addPass(mlir::triton::cpu::createConvertDotToSVE2I8MM(
+        w4Only, fixedI8MM));
   });
   m.def("add_convert_dot_to_neon_i8mm", [](mlir::PassManager &pm) {
     pm.addPass(mlir::triton::cpu::createConvertDotToNeonI8MM());

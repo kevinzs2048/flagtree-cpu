@@ -315,14 +315,15 @@ def TTC_FusedTransformerLayerOp : TTC_Op<"fused_transformer_layer", []> {
 }
 
 def TTC_FusedMlpOp : TTC_Op<"fused_mlp", []> {
-    let summary = "TLE-CPU: Fused MLP = gate SDOT GEMV + up SDOT GEMV + SWIGLU";
+    let summary = "TLE-CPU: Compiler-lowered gate/up SDOT GEMV plus SwiGLU";
     let arguments = (ins TT_Ptr:$x_ptr,
                          TT_Ptr:$gate_packed_ptr, TT_Ptr:$up_packed_ptr,
                          TT_Ptr:$gate_scale_ptr, TT_Ptr:$up_scale_ptr,
                          TT_Ptr:$out_ptr,
-                         I64:$K, I64:$N);
+                         I64:$K, I64:$N,
+                         I64:$n_start, I64:$n_count);
     let results = (outs);
-    let assemblyFormat = "$x_ptr `,` $gate_packed_ptr `,` $up_packed_ptr `,` $gate_scale_ptr `,` $up_scale_ptr `,` $out_ptr `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($gate_packed_ptr) `,` type($up_packed_ptr) `,` type($gate_scale_ptr) `,` type($up_scale_ptr) `,` type($out_ptr)";
+    let assemblyFormat = "$x_ptr `,` $gate_packed_ptr `,` $up_packed_ptr `,` $gate_scale_ptr `,` $up_scale_ptr `,` $out_ptr `,` $K `,` $N `,` $n_start `,` $n_count attr-dict `:` type($x_ptr) `,` type($gate_packed_ptr) `,` type($up_packed_ptr) `,` type($gate_scale_ptr) `,` type($up_scale_ptr) `,` type($out_ptr)";
 }
 
 def TTC_FlashAttnDecodeOp : TTC_Op<"flash_attn_decode", []> {
@@ -335,6 +336,26 @@ def TTC_FlashAttnDecodeOp : TTC_Op<"flash_attn_decode", []> {
                          I64:$stride_kn, I64:$stride_vn);
     let results = (outs);
     let assemblyFormat = "$q_ptr `,` $k_ptr `,` $v_ptr `,` $out_ptr `,` $seq_len `,` $head_dim `,` $num_heads `,` $num_kv_heads `,` $stride_kn `,` $stride_vn attr-dict `:` type($q_ptr) `,` type($k_ptr) `,` type($v_ptr) `,` type($out_ptr)";
+}
+
+def TTC_SmeAttnPrefillOp : TTC_Op<"sme_attn_prefill", []> {
+    let summary = "TLE-CPU: M>1 prefill attention via SME BFMOPA (QK^T -> softmax -> P*V)";
+    let description = [{
+      Fused bf16 prefill attention. The two score matmuls run on the SME unit
+      (sme_tile_16x64_bf16 / BFMOPA, lossless f32 accumulation); the row-wise
+      softmax (with optional causal mask) runs in NEON/scalar.
+      Q: [num_heads, M, head_dim] bf16; K,V: [num_kv_heads, n_kv, head_dim] bf16;
+      Out: [num_heads, M, head_dim] bf16. GQA via num_kv_heads < num_heads.
+      Calls the sme_attn_prefill_bf16 runtime function in libTritonCPURuntime.
+    }];
+    let arguments = (ins TT_Ptr:$q_ptr, TT_Ptr:$k_ptr, TT_Ptr:$v_ptr,
+                         TT_Ptr:$out_ptr,
+                         I64:$m, I64:$n_kv, I64:$head_dim,
+                         F32Attr:$sm_scale,
+                         I64:$num_heads, I64:$num_kv_heads,
+                         I64:$causal);
+    let results = (outs);
+    let assemblyFormat = "$q_ptr `,` $k_ptr `,` $v_ptr `,` $out_ptr `,` $m `,` $n_kv `,` $head_dim `,` $num_heads `,` $num_kv_heads `,` $causal attr-dict `:` type($q_ptr) `,` type($k_ptr) `,` type($v_ptr) `,` type($out_ptr)";
 }
 
 def TTC_RmsNormOp : TTC_Op<"rms_norm", []> {
@@ -384,17 +405,57 @@ def TTC_SdotGemvOp : TTC_Op<"sdot_gemv", []> {
 }
 
 def TTC_SdotGemvFusedBf16Op : TTC_Op<"sdot_gemv_fused_bf16", []> {
-    let summary = "TLE-CPU: Fused BF16 INT8 GEMV with dynamic activation quantization";
+    let summary = "TLE-CPU: Compiler-lowered packed INT8 GEMV with dynamic activation quantization";
     let description = [{
       Fused: BF16 activation → dynamic INT8 quantization → SDOT GEMV → dequant → BF16 output.
-      Eliminates Python-side abs/div/clamp/to overhead.
+      The compiler expands this op into loops, packed-weight loads, SDOT
+      intrinsics and dequantization; it is not an external runtime call.
       x: [K] bf16, B_packed: SDOT format, w_scale: [N] fp32, out: [N] bf16.
+      Matching fp32 x/out pointer types select the ggml-compatible fp32 path.
+      Each program computes N_count outputs starting at N_start.
     }];
     let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$b_packed_ptr,
                          TT_Ptr:$w_scale_ptr, TT_Ptr:$out_ptr,
-                         I64:$K, I64:$N);
+                         I64:$K, I64:$N,
+                         I64:$n_start, I64:$n_count);
     let results = (outs);
-    let assemblyFormat = "$x_ptr `,` $b_packed_ptr `,` $w_scale_ptr `,` $out_ptr `,` $K `,` $N attr-dict `:` type($x_ptr) `,` type($b_packed_ptr) `,` type($w_scale_ptr) `,` type($out_ptr)";
+    let assemblyFormat = "$x_ptr `,` $b_packed_ptr `,` $w_scale_ptr `,` $out_ptr `,` $K `,` $N `,` $n_start `,` $n_count attr-dict `:` type($x_ptr) `,` type($b_packed_ptr) `,` type($w_scale_ptr) `,` type($out_ptr)";
+}
+
+def TTC_SdotGemvWholeOp : TTC_Op<"sdot_gemv_whole", []> {
+    let summary = "TLE-CPU: Whole packed W8 projection with one activation quantization";
+    let description = [{
+      Computes all N outputs in one compiler-generated kernel. The activation
+      is dynamically quantized once into a small stack buffer, then an outer
+      output-tile loop feeds fixed-size SDOT microtiles. Keeping only
+      tile_n/4 vector accumulators avoids the register spills produced by a
+      large BLOCK_N. B_packed uses [N/tile_n, K/4, tile_n/4, 16].
+      This op expands to SCF/vector/LLVM intrinsic IR and has no runtime call.
+    }];
+    let arguments = (ins TT_Ptr:$x_ptr, TT_Ptr:$b_packed_ptr,
+                         TT_Ptr:$w_scale_ptr, TT_Ptr:$out_ptr,
+                         I64:$K, I64:$N, I64:$tile_n);
+    let results = (outs);
+    let assemblyFormat = "$x_ptr `,` $b_packed_ptr `,` $w_scale_ptr `,` $out_ptr `,` $K `,` $N `,` $tile_n attr-dict `:` type($x_ptr) `,` type($b_packed_ptr) `,` type($w_scale_ptr) `,` type($out_ptr)";
+}
+
+def TTC_SdotGemvPrequantOp : TTC_Op<"sdot_gemv_prequant", []> {
+    let summary = "TLE-CPU: Compiler-lowered packed INT8 GEMV from a shared quantized activation";
+    let description = [{
+      Computes one output range from an INT8 activation and its FP32 dynamic
+      scale. The compiler expands this op into packed-weight loads, rolled
+      loops, AArch64 SDOT intrinsics and dequantization; it is not an external
+      runtime call. Splitting activation quantization into an ordinary Triton
+      kernel lets every output block reuse the same quantized vector.
+      x_q: [K] int8, x_scale: [1] fp32, B_packed: blocked SDOT format,
+      w_scale: [N] fp32, out: [N] bf16 or fp32.
+    }];
+    let arguments = (ins TT_Ptr:$x_q_ptr, TT_Ptr:$x_scale_ptr,
+                         TT_Ptr:$b_packed_ptr, TT_Ptr:$w_scale_ptr,
+                         TT_Ptr:$out_ptr, I64:$K, I64:$N,
+                         I64:$n_start, I64:$n_count);
+    let results = (outs);
+    let assemblyFormat = "$x_q_ptr `,` $x_scale_ptr `,` $b_packed_ptr `,` $w_scale_ptr `,` $out_ptr `,` $K `,` $N `,` $n_start `,` $n_count attr-dict `:` type($x_q_ptr) `,` type($x_scale_ptr) `,` type($b_packed_ptr) `,` type($w_scale_ptr) `,` type($out_ptr)";
 }
 
 def TTC_SdotPackWeightsOp : TTC_Op<"sdot_pack_weights", []> {

@@ -222,6 +222,69 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
         dyn_cast<VectorType>(getTypeConverter()->convertType(loadOp.getType()));
     auto shape = vecTy.getShape();
 
+    // Preserve a single 2-D memory descriptor for direct, unmasked i8 dot
+    // operands.  The normal CPU lowering below materializes one independent
+    // memref per row.  That is fine for generic vector lowering, but destroys
+    // the base/stride relationship a target microkernel needs in order to
+    // generate a compact rolled loop.
+    //
+    // AxisInfo already proved the minor dimension contiguous before entering
+    // this function.  Recover the dynamic major stride from the scalarizable
+    // element-offset expression and reinterpret the first element pointer as
+    // a statically-shaped, dynamically-strided memref.  Unsupported or
+    // ambiguous pointer expressions keep using the existing lowering.
+    if (shape.size() == 2 && vecTy.getElementType().isInteger(8) &&
+        !loadOp.getMask() && loadOp.getBoundaryCheck().empty() &&
+        loadOp.getResult().hasOneUse() &&
+        isa<triton::DotOp>(*loadOp.getResult().user_begin())) {
+      Value ptrTensor = loadOp.getPtr();
+      if (canComputeScalarValue(ptrTensor)) {
+        SmallVector<int64_t> origin{0, 0};
+        SmallVector<int64_t> nextRow{1, 0};
+        Value firstPtr =
+            extractScalarPointer(loc, ptrTensor, origin, rewriter);
+        Value nextRowPtr =
+            extractScalarPointer(loc, ptrTensor, nextRow, rewriter);
+        Value firstAddr = rewriter.create<triton::PtrToIntOp>(
+            loc, rewriter.getI64Type(), firstPtr);
+        Value nextRowAddr = rewriter.create<triton::PtrToIntOp>(
+            loc, rewriter.getI64Type(), nextRowPtr);
+        // This path is intentionally i8-only, so a byte-address difference is
+        // also the memref stride in elements.
+        Value majorStride =
+            rewriter.create<arith::SubIOp>(loc, nextRowAddr, firstAddr);
+        if (!majorStride.getType().isIndex())
+          majorStride = rewriter.create<arith::IndexCastOp>(
+              loc, rewriter.getIndexType(), majorStride);
+
+        auto baseMemRefTy =
+            MemRefType::get({1}, vecTy.getElementType());
+        Value baseMemRef = rewriter.create<triton::cpu::PtrToMemRefOp>(
+            loc, baseMemRefTy, firstPtr);
+
+        auto layout = StridedLayoutAttr::get(
+            getContext(), 0, {ShapedType::kDynamic, 1});
+        auto tileMemRefTy =
+            MemRefType::get(shape, vecTy.getElementType(), layout);
+        SmallVector<OpFoldResult> sizes{
+            rewriter.getIndexAttr(shape[0]), rewriter.getIndexAttr(shape[1])};
+        SmallVector<OpFoldResult> strides{majorStride,
+                                          rewriter.getIndexAttr(1)};
+        Value tileMemRef = rewriter.create<memref::ReinterpretCastOp>(
+            loc, tileMemRefTy, baseMemRef, rewriter.getIndexAttr(0), sizes,
+            strides);
+
+        Value zeroIdx = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+        SmallVector<Value> indices(2, zeroIdx);
+        Value padding = getPaddingValue(loc, vecTy.getElementType(),
+                                        loadOp.getPadding(), rewriter);
+        SmallVector<bool> inBounds(2, true);
+        rewriter.replaceOpWithNewOp<vector::TransferReadOp>(
+            loadOp, vecTy, tileMemRef, indices, padding, inBounds);
+        return success();
+      }
+    }
+
     auto strides = computeStrides(shape);
     int64_t numElems = vecTy.getNumElements();
     Type subVecTy = VectorType::get(shape.back(), vecTy.getElementType());

@@ -1,0 +1,18 @@
+diff --git a/vllm_fl/__init__.py b/vllm_fl/__init__.py
+--- a/vllm_fl/__init__.py
++++ b/vllm_fl/__init__.py
+@@ -165,10 +165,13 @@ def register_model():
+             elif int8_backend == "kleidiai":
+                 from vllm_fl.ops.cpu_int8_kai import enable_int8
++            elif int8_backend == "triton_codegen":
++                from vllm_fl.ops.cpu_int8_triton_codegen import enable_int8
+             elif int8_backend == "torchpack":
+                 from vllm_fl.ops.cpu_int8_pack import enable_int8
+             else:
+                 raise ValueError(
+-                    "FL_CPU_INT8_BACKEND must be 'tleraw', 'kleidiai' or 'torchpack'"
++                    "FL_CPU_INT8_BACKEND must be 'tleraw', 'kleidiai', "
++                    "'triton_codegen' or 'torchpack'"
+                 )
+
+             enable_int8()

@@ -243,7 +243,12 @@ Value shiftIndex(Location loc, Value index, int64_t offs,
 
   // Do constant folding right away here for better code readability
   // after the pass.
-  auto cstOp = dyn_cast<arith::ConstantOp>(index.getDefiningOp());
+  // Loop induction variables and function arguments are block arguments and
+  // therefore have no defining operation.  dyn_cast(nullptr) asserts in the
+  // LLVM version used by Triton 3.7, so keep the constant-folding fast path
+  // explicitly null-safe.
+  auto cstOp =
+      dyn_cast_or_null<arith::ConstantOp>(index.getDefiningOp());
   if (cstOp) {
     int64_t oldVal = cast<IntegerAttr>(cstOp.getValue()).getInt();
     return rewriter.create<arith::ConstantIndexOp>(loc, oldVal + offs);
