@@ -2,6 +2,7 @@ import functools
 import hashlib
 import os
 import platform
+import re
 import tempfile
 from pathlib import Path
 
@@ -25,6 +26,15 @@ def min_dot_size(target: GPUTarget):
 
 VecLib = cpu.passes.ttcpuir.VecLib
 Ukernels = cpu.passes.ttcpuir.Ukernels
+
+
+def _normalize_darwin_aarch64_assembly(assembly: str) -> str:
+    """Translate LLVM's GNU-style I8MM spelling for AppleClang."""
+    return re.sub(
+        r"\bsmmla\.4s\s+v(\d+),\s*v(\d+),\s*v(\d+)",
+        r"smmla v\1.4s, v\2.16b, v\3.16b",
+        assembly,
+    )
 
 
 @dataclass(frozen=True)
@@ -156,11 +166,6 @@ class CPUBackend(BaseBackend):
                 and not getenv_bool("TRITON_CPU_DISABLE_SVE2_I8MM", False))
 
     def arm_assembler_flags(self) -> list[str]:
-        if platform.system() == "Darwin" and self.supports_fixed_i8mm():
-            # Host-only JIT: let Apple Clang select the exact local CPU.  This
-            # avoids relying on GNU-style extension spellings across Xcode
-            # releases while still enabling the integrated assembler.
-            return ["-mcpu=native"]
         fp16 = "+fp16" if "fullfp16" in self.cpu_features else ""
         bf16 = "+bf16" if "bf16" in self.cpu_features else ""
         extensions = fp16 + bf16
@@ -407,6 +412,12 @@ class CPUBackend(BaseBackend):
     def make_so(self, src, metadata, options):
         with tempfile.TemporaryDirectory() as tmpdir:
             asm_path = os.path.join(tmpdir, "kernel.s")
+            if platform.system() == "Darwin" and self.cpu_arch in (
+                "aarch64",
+                "arm64",
+                "armv8",
+            ):
+                src = _normalize_darwin_aarch64_assembly(src)
             Path(asm_path).write_text(src)
             lib_dirs = cpu_driver.library_dirs
             libs = ["m", "TritonCPURuntime", "sleef"]
