@@ -1,6 +1,7 @@
 import functools
 import hashlib
 import os
+import platform
 import tempfile
 from pathlib import Path
 
@@ -12,11 +13,14 @@ from triton._C.libtriton import cpu, ir, llvm, passes, getenv_bool
 from triton.backends.compiler import BaseBackend, GPUTarget, Language
 from triton.runtime.build import _build
 import triton.backends.cpu.driver as cpu_driver
+from triton.backends.cpu.target_info import get_sve_vector_bits, supplement_aarch64_features
 
 
 def min_dot_size(target: GPUTarget):
-    # Other architectures will only support 16,16,16
-    return lambda lhsType, rhsType: (4, 4, 4)
+    # Decode GEMV naturally expresses a [1, K] x [K, N] dot.  The Arm
+    # lowering has an M=1 SDOT path; keep the upstream lower bound elsewhere.
+    minimum = (1, 4, 4) if target.arch in ("aarch64", "arm64", "armv8") else (4, 4, 4)
+    return lambda lhsType, rhsType: minimum
 
 
 VecLib = cpu.passes.ttcpuir.VecLib
@@ -120,7 +124,8 @@ class CPUBackend(BaseBackend):
         self.binary_ext = "so"
         self.cpu_arch = llvm.get_cpu_tripple().split("-")[0]
         self.cpu_name = llvm.get_cpu_name()
-        self.cpu_features = llvm.get_cpu_features()
+        self.cpu_features = supplement_aarch64_features(llvm.get_cpu_features())
+        self.sve_vector_bits = get_sve_vector_bits() if "sve" in self.cpu_features else 0
         if 'amx-tile' in self.cpu_features:
             if not cpu.enable_amx():
                 import warnings
@@ -129,6 +134,61 @@ class CPUBackend(BaseBackend):
                 self.cpu_features.discard('amx-int8')
                 self.cpu_features.discard('amx-fp16')
                 self.cpu_features.discard('amx-bf16')
+
+    def supports_sve2_i8mm(self) -> bool:
+        return (self.cpu_arch in ("aarch64", "arm64", "armv8") and "sve2" in self.cpu_features
+                and "i8mm" in self.cpu_features and self.sve_vector_bits == 128)
+
+    def use_sve2_i8mm(self) -> bool:
+        return (self.supports_sve2_i8mm()
+                and not getenv_bool("TRITON_CPU_FIXED_I8MM", False)
+                and not getenv_bool("TRITON_CPU_DISABLE_SVE2_I8MM", False))
+
+    def supports_fixed_i8mm(self) -> bool:
+        return (self.cpu_arch in ("aarch64", "arm64", "armv8")
+                and "dotprod" in self.cpu_features
+                and "i8mm" in self.cpu_features)
+
+    def use_fixed_i8mm(self) -> bool:
+        return (self.supports_fixed_i8mm()
+                and (getenv_bool("TRITON_CPU_FIXED_I8MM", False)
+                     or not self.supports_sve2_i8mm())
+                and not getenv_bool("TRITON_CPU_DISABLE_SVE2_I8MM", False))
+
+    def arm_assembler_flags(self) -> list[str]:
+        if platform.system() == "Darwin" and self.supports_fixed_i8mm():
+            # Host-only JIT: let Apple Clang select the exact local CPU.  This
+            # avoids relying on GNU-style extension spellings across Xcode
+            # releases while still enabling the integrated assembler.
+            return ["-mcpu=native"]
+        fp16 = "+fp16" if "fullfp16" in self.cpu_features else ""
+        bf16 = "+bf16" if "bf16" in self.cpu_features else ""
+        extensions = fp16 + bf16
+        if self.use_fixed_i8mm():
+            return [f"-march=armv8.6-a+dotprod+i8mm{extensions}"]
+        if self.supports_sve2_i8mm():
+            return [f"-march=armv8.6-a+sve2+i8mm{extensions}"]
+        if self.supports_fixed_i8mm():
+            return [f"-march=armv8.6-a+dotprod+i8mm{extensions}"]
+        return []
+
+    def llvm_target_features(self) -> str:
+        if self.cpu_arch not in ("aarch64", "arm64", "armv8"):
+            return ""
+        fixed_width = self.use_fixed_i8mm()
+        features = []
+        for feature in sorted(self.cpu_features):
+            # Forcing the fixed path on an SVE machine must model a genuinely
+            # non-SVE target. Otherwise LLVM can introduce scalable vector
+            # instructions while optimizing ordinary integer expressions even
+            # though the custom dot lowering itself emitted only Neon.
+            disable = fixed_width and (
+                feature == "sve" or feature.startswith("sve-")
+                or feature == "sve2" or feature.startswith("sve2-")
+                or feature == "sme" or feature.startswith("sme-")
+            )
+            features.append(("-" if disable else "+") + feature)
+        return ",".join(features)
 
     def parse_options(self, opts) -> Any:
         args = {k: opts[k] for k in CPUOptions.__dataclass_fields__.keys() if k in opts}
@@ -167,6 +227,10 @@ class CPUBackend(BaseBackend):
         passes.common.add_cse(pm)
         passes.common.add_licm(pm)
         passes.common.add_symbol_dce(pm)
+        # Honor tl.range(..., loop_unroll_factor=...).  The GPU backends run
+        # this standard TTIR pass, but upstream Triton-CPU 3.7.2 omitted it,
+        # leaving the annotation in IR without changing generated code.
+        passes.ttir.add_loop_unroll(pm)
         pm.run(mod, "make_ttir")
         return mod
 
@@ -182,7 +246,11 @@ class CPUBackend(BaseBackend):
         cpu.passes.ttcpuir.add_convert_elem_manip_ops(pm)
         cpu.passes.ttcpuir.add_convert_dot_op(pm)
         cpu.passes.ttcpuir.add_convert_histogram_op(pm)
-        cpu.passes.ttcpuir.add_convert_reduction_op(pm, True, False)
+        # Keep multidimensional reductions intact until the target pass.
+        # Besides the existing BF16 mul/sum matcher, this lets AArch64 fuse
+        # packed INT8 4x2x4 reductions into two SDOT accumulators instead of
+        # losing the microtile structure in scalar shuffle trees.
+        cpu.passes.ttcpuir.add_convert_reduction_op(pm, True, True)
         cpu.passes.ttcpuir.add_convert_scan_op(pm)
         cpu.passes.ttcpuir.add_convert_cf_ops(pm)
         cpu.passes.ttcpuir.add_convert_atomic_ops(pm)
@@ -207,11 +275,16 @@ class CPUBackend(BaseBackend):
             cpu.passes.ttcpuir.add_convert_dot_to_ukernels(pm, ukernels)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
-        convert_bf16_dot_product = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
-                                    and 'fp-armv8' in self.cpu_features and 'neon' in self.cpu_features)
-        if convert_bf16_dot_product:
+        is_aarch64_neon = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
+                           and 'neon' in self.cpu_features)
+        convert_bf16_dot_product = (is_aarch64_neon and 'fp-armv8' in self.cpu_features
+                                    and 'bf16' in self.cpu_features)
+        convert_i8_dot_product = is_aarch64_neon and 'dotprod' in self.cpu_features
+        if convert_bf16_dot_product or convert_i8_dot_product:
             use_horizontal_sum = os.getenv("TRITON_CPU_DOT_PROD_HORIZ_SUM", "1") == "1"
-            cpu.passes.ttcpuir.add_convert_dot_product(pm, use_horizontal_sum)
+            cpu.passes.ttcpuir.add_convert_dot_product(
+                pm, use_horizontal_sum, convert_bf16_dot_product, convert_i8_dot_product
+            )
         if 'amx-tile' in self.cpu_features:
             amx_int8 = 'amx-int8' in self.cpu_features
             # amx_fp16 = 'amx-fp16' in self.cpu_features
@@ -221,6 +294,13 @@ class CPUBackend(BaseBackend):
             cpu.passes.ttcpuir.add_convert_dot_to_amx(pm, amx_int8, amx_fp16, amx_bf16)
         if 'avx512f' in self.cpu_features:
             cpu.passes.ttcpuir.add_convert_dot_to_fma(pm)
+        if self.use_sve2_i8mm():
+            cpu.passes.ttcpuir.add_convert_dot_to_sve2_i8mm(pm, False)
+        elif self.use_fixed_i8mm():
+            # Fixed-width Arm targets use the M1 and packed Q4/Q8 NEON
+            # SDOT/SMMLA recognizers.  Generic M>=8 candidates remain off
+            # because their lowering requires SVE vectors.
+            cpu.passes.ttcpuir.add_convert_dot_to_sve2_i8mm(pm, True)
         cpu.passes.ttcpuir.add_convert_dot_generic(pm)
         promote_bf16_to_fp32 = self.cpu_arch == "x86_64" and "avx512bf16" not in self.cpu_features
         # We don't have any lowering for mixed precision matmuls, so always use casts for now
@@ -283,6 +363,14 @@ class CPUBackend(BaseBackend):
         passes.common.add_canonicalizer(pm)
         passes.common.add_cse(pm)
         passes.common.add_symbol_dce(pm)
+        # Cortex-A720 has a reproducible low-12-bit false dependency when a
+        # 256-bit BF16 vector store becomes STP Q,Q and its two store addresses
+        # overlap a following 32-byte load's page offsets.  Run this after CSE
+        # so in-place kernels can be excluded by exact load/store addresses.
+        # Keeping that one independent-output store as two STRs removes the
+        # alignment cliff while preserving the 16-element compute tile.
+        if self.cpu_name == "cortex-a720":
+            cpu.passes.ttcpuir.add_mark_wide_bf16_stores_volatile(pm)
         if os.environ.get("TRITON_DISABLE_LINE_INFO", "0") == "0":
             passes.llvmir.add_di_scope(pm)
         pm.run(mod, "make_llir")
@@ -310,18 +398,23 @@ class CPUBackend(BaseBackend):
         del context
         return ret
 
-    @staticmethod
-    def make_asm(src, metadata, options):
-        return llvm.translate_to_host_asm(src, options.enable_fp_fusion, options.enable_fast_math)
+    def make_asm(self, src, metadata, options):
+        return llvm.translate_to_host_asm(
+            src, options.enable_fp_fusion, options.enable_fast_math,
+            self.llvm_target_features()
+        )
 
-    @staticmethod
-    def make_so(src, metadata, options):
+    def make_so(self, src, metadata, options):
         with tempfile.TemporaryDirectory() as tmpdir:
             asm_path = os.path.join(tmpdir, "kernel.s")
             Path(asm_path).write_text(src)
             lib_dirs = cpu_driver.library_dirs
             libs = ["m", "TritonCPURuntime", "sleef"]
-            ccflags = []
+            # GCC 12 does not always infer SVE i8mm from -mcpu=native even
+            # when Linux reports the feature.  LLVM has already emitted the
+            # assembly, so this flag only teaches the system assembler which
+            # instructions are valid for the detected target.
+            ccflags = self.arm_assembler_flags()
             so = _build("kernel", asm_path, tmpdir, lib_dirs, cpu_driver.include_dirs, libs, ccflags)
             with open(so, "rb") as f:
                 return f.read()
@@ -337,8 +430,7 @@ class CPUBackend(BaseBackend):
 
     @functools.lru_cache()
     def hash(self):
-        # TODO: Get more detailed CPU info like raw brand name with supported ISAs.
-        # Right now it would only return a simple string like "x86_64" or "aarch64".
-        import platform
-
-        return f"{platform.machine()}"
+        features = ",".join(sorted(self.cpu_features))
+        return (f"{self.cpu_arch}-{self.cpu_name}-{features}-sve{self.sve_vector_bits}"
+                f"-sve2-i8mm-{int(self.use_sve2_i8mm())}"
+                f"-fixed-i8mm-{int(self.use_fixed_i8mm())}")

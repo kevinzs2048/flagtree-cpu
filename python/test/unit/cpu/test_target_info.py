@@ -1,0 +1,144 @@
+from pathlib import Path
+
+import pytest
+
+from triton.backends.cpu import target_info
+from triton.backends.cpu import compiler as cpu_compiler
+from triton.backends.cpu.compiler import CPUBackend
+
+
+def test_parse_linux_cpuinfo_uses_features_common_to_all_cpus():
+    cpuinfo = """
+processor : 0
+Features  : fp asimd asimddp sve sve2 i8mm bf16
+
+processor : 1
+Features  : fp asimd asimddp sve sve2 bf16
+"""
+    assert target_info.parse_linux_cpuinfo_features(cpuinfo) == {
+        "fp",
+        "asimd",
+        "asimddp",
+        "sve",
+        "sve2",
+        "bf16",
+    }
+
+
+def test_supplement_aarch64_features(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(target_info.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(target_info.platform, "machine", lambda: "aarch64")
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text(
+        "Features : fp asimd asimdhp asimddp i8mm bf16 svebf16\n"
+    )
+
+    assert target_info.supplement_aarch64_features({"neon", "sve2"}, cpuinfo_path=cpuinfo) == {
+        "neon",
+        "sve2",
+        "dotprod",
+        "fullfp16",
+        "i8mm",
+        "bf16",
+    }
+
+
+def test_supplement_features_is_noop_off_aarch64(monkeypatch):
+    monkeypatch.setattr(target_info.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(target_info.platform, "machine", lambda: "x86_64")
+    assert target_info.supplement_aarch64_features({"avx2"}) == {"avx2"}
+
+
+def test_supplement_aarch64_features_uses_darwin_sysctl(monkeypatch):
+    monkeypatch.setattr(target_info.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(target_info.platform, "machine", lambda: "arm64")
+
+    class Result:
+        returncode = 0
+
+        def __init__(self, enabled):
+            self.stdout = "1\n" if enabled else "0\n"
+
+    reported = {
+        "hw.optional.arm.FEAT_DotProd": True,
+        "hw.optional.arm.FEAT_FP16": True,
+        "hw.optional.arm.FEAT_I8MM": True,
+    }
+
+    def run(command, **_kwargs):
+        return Result(reported[command[-1]])
+
+    monkeypatch.setattr(target_info.subprocess, "run", run)
+    assert target_info.supplement_aarch64_features({"neon"}) == {
+        "neon",
+        "dotprod",
+        "fullfp16",
+        "i8mm",
+    }
+
+
+def test_fixed_i8mm_mode_is_used_without_sve2(monkeypatch):
+    backend = object.__new__(CPUBackend)
+    backend.cpu_arch = "aarch64"
+    backend.cpu_features = {"neon", "dotprod", "i8mm"}
+    backend.sve_vector_bits = 0
+    monkeypatch.delenv("TRITON_CPU_DISABLE_SVE2_I8MM", raising=False)
+    monkeypatch.delenv("TRITON_CPU_FIXED_I8MM", raising=False)
+
+    assert backend.supports_fixed_i8mm()
+    assert backend.use_fixed_i8mm()
+    assert not backend.use_sve2_i8mm()
+
+    backend.cpu_features.add("sve2")
+    backend.sve_vector_bits = 128
+    assert backend.supports_sve2_i8mm()
+    assert backend.use_sve2_i8mm()
+    assert not backend.use_fixed_i8mm()
+
+
+def test_arm_assembler_flags_select_host_compatible_isa(monkeypatch):
+    backend = object.__new__(CPUBackend)
+    backend.cpu_arch = "arm64"
+    backend.cpu_features = {"neon", "dotprod", "i8mm"}
+    backend.sve_vector_bits = 0
+    monkeypatch.delenv("TRITON_CPU_FIXED_I8MM", raising=False)
+    monkeypatch.delenv("TRITON_CPU_DISABLE_SVE2_I8MM", raising=False)
+
+    monkeypatch.setattr(cpu_compiler.platform, "system", lambda: "Darwin")
+    assert backend.arm_assembler_flags() == ["-mcpu=native"]
+
+    monkeypatch.setattr(cpu_compiler.platform, "system", lambda: "Linux")
+    assert backend.arm_assembler_flags() == [
+        "-march=armv8.6-a+dotprod+i8mm"
+    ]
+
+    backend.cpu_features.update(("bf16", "fullfp16"))
+    assert backend.arm_assembler_flags() == [
+        "-march=armv8.6-a+dotprod+i8mm+fp16+bf16"
+    ]
+
+    backend.cpu_arch = "aarch64"
+    backend.cpu_features.add("sve2")
+    backend.sve_vector_bits = 128
+    assert backend.arm_assembler_flags() == [
+        "-march=armv8.6-a+sve2+i8mm+fp16+bf16"
+    ]
+
+    monkeypatch.setenv("TRITON_CPU_FIXED_I8MM", "1")
+    assert not backend.use_sve2_i8mm()
+    assert backend.use_fixed_i8mm()
+    target_features = set(backend.llvm_target_features().split(","))
+    assert "+dotprod" in target_features and "+i8mm" in target_features
+    assert "-sve2" in target_features
+
+    monkeypatch.delenv("TRITON_CPU_FIXED_I8MM")
+    monkeypatch.setenv("TRITON_CPU_DISABLE_SVE2_I8MM", "1")
+    assert not backend.use_sve2_i8mm()
+    assert not backend.use_fixed_i8mm()
+
+
+@pytest.mark.parametrize("prctl_value, expected", [(16, 128), (32 | 0x40000, 256), (-1, 0)])
+def test_get_sve_vector_bits(monkeypatch, prctl_value, expected):
+    monkeypatch.setattr(target_info.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(target_info.platform, "machine", lambda: "aarch64")
+    assert target_info.get_sve_vector_bits(lambda *_: prctl_value) == expected
