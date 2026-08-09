@@ -1,0 +1,287 @@
+From 20b94286b18db623a9709b6048aca6d5b5e21fbd Mon Sep 17 00:00:00 2001
+From: Kevin Zhao <kevin.zhao@linaro.org>
+Date: Mon, 10 Aug 2026 03:05:49 +0800
+Subject: [PATCH] Support text-only Qwen3.5 W4A8 on CPU
+
+Skip quantization of the unloaded vision tower, preserve reshaped GDN convolution weights, and make hybrid KV-cache sizing honor native CPU attention alignment. The confirmed runtime failures were construction of an excluded vision tower and a 16-aligned hybrid block passed to a 32-aligned CPU attention kernel.\n\nAssisted-by: OpenAI Codex
+---
+ .../test_cpu_unquantized_gemm_dispatch.py     | 11 +++++
+ .../test_qwen3_5_text_only_quantization.py    | 43 +++++++++++++++++++
+ tests/test_cpu_platform_config.py             | 29 +++++++++++++
+ vllm/model_executor/layers/utils.py           |  7 +++
+ vllm/model_executor/models/config.py          | 27 +++++++++---
+ vllm/model_executor/models/qwen3_5.py         | 22 ++++++++--
+ vllm/platforms/cpu.py                         | 13 +++++-
+ 7 files changed, 141 insertions(+), 11 deletions(-)
+ create mode 100644 tests/models/test_qwen3_5_text_only_quantization.py
+ create mode 100644 tests/test_cpu_platform_config.py
+
+diff --git a/tests/model_executor/test_cpu_unquantized_gemm_dispatch.py b/tests/model_executor/test_cpu_unquantized_gemm_dispatch.py
+index 322897c..c6a941b 100644
+--- a/tests/model_executor/test_cpu_unquantized_gemm_dispatch.py
++++ b/tests/model_executor/test_cpu_unquantized_gemm_dispatch.py
+@@ -66,3 +66,14 @@ def test_dispatch_cpu_unquantized_gemm_zen_remove_weight(monkeypatch):
+     utils.dispatch_cpu_unquantized_gemm(layer, remove_weight=True)
+ 
+     assert layer.weight.numel() == 0
++
++
++def test_dispatch_cpu_unquantized_gemm_skips_reshaped_conv_weight():
++    layer = torch.nn.Module()
++    layer.weight = torch.nn.Parameter(torch.randn(8, 1, 4))
++    original = layer.weight
++
++    utils.dispatch_cpu_unquantized_gemm(layer, remove_weight=True)
++
++    assert layer.weight is original
++    assert not hasattr(layer, "cpu_linear")
+diff --git a/tests/models/test_qwen3_5_text_only_quantization.py b/tests/models/test_qwen3_5_text_only_quantization.py
+new file mode 100644
+index 0000000..e3fb836
+--- /dev/null
++++ b/tests/models/test_qwen3_5_text_only_quantization.py
+@@ -0,0 +1,43 @@
++import inspect
++from types import SimpleNamespace
++
++from vllm.model_executor.models.qwen3_5 import (
++    Qwen3_5ForConditionalGeneration,
++    Qwen3_5MoeForConditionalGeneration,
++    _qwen3_5_vision_quant_config,
++)
++
++
++def _config(language_model_only: bool):
++    quant_config = object()
++    return (
++        SimpleNamespace(
++            quant_config=quant_config,
++            model_config=SimpleNamespace(
++                multimodal_config=SimpleNamespace(
++                    language_model_only=language_model_only
++                )
++            ),
++        ),
++        quant_config,
++    )
++
++
++def test_text_only_qwen35_does_not_quantize_vision_tower():
++    config, _ = _config(language_model_only=True)
++    assert _qwen3_5_vision_quant_config(config) is None
++
++
++def test_multimodal_qwen35_keeps_requested_vision_quantization():
++    config, quant_config = _config(language_model_only=False)
++    assert _qwen3_5_vision_quant_config(config) is quant_config
++
++
++def test_dense_and_moe_constructors_resolve_vision_quant_config():
++    for model_class in (
++        Qwen3_5ForConditionalGeneration,
++        Qwen3_5MoeForConditionalGeneration,
++    ):
++        source = inspect.getsource(model_class.__init__)
++        assert "vision_quant_config = _qwen3_5_vision_quant_config" in source
++        assert "quant_config=vision_quant_config" in source
+diff --git a/tests/test_cpu_platform_config.py b/tests/test_cpu_platform_config.py
+new file mode 100644
+index 0000000..91d5e0f
+--- /dev/null
++++ b/tests/test_cpu_platform_config.py
+@@ -0,0 +1,29 @@
++from vllm.model_executor.models.config import _hybrid_attention_block_alignment
++from vllm.platforms.cpu import _cpu_default_block_size
++
++
++def test_cpu_default_block_size_uses_128_minimum():
++    assert _cpu_default_block_size(16, user_specified=False) == 128
++
++
++def test_cpu_default_block_size_preserves_hybrid_requirement():
++    assert _cpu_default_block_size(528, user_specified=False) == 544
++
++
++def test_cpu_default_block_size_preserves_user_value():
++    assert _cpu_default_block_size(32, user_specified=True) == 32
++
++
++def test_hybrid_attention_uses_native_cpu_alignment():
++    assert (
++        _hybrid_attention_block_alignment(
++            use_mla=False, use_cutlass_mla=False, is_cpu=True
++        )
++        == 32
++    )
++    assert (
++        _hybrid_attention_block_alignment(
++            use_mla=False, use_cutlass_mla=False, is_cpu=False
++        )
++        == 16
++    )
+diff --git a/vllm/model_executor/layers/utils.py b/vllm/model_executor/layers/utils.py
+index 4918c83..c01b82e 100644
+--- a/vllm/model_executor/layers/utils.py
++++ b/vllm/model_executor/layers/utils.py
+@@ -228,6 +228,13 @@ def dispatch_cpu_unquantized_gemm(
+         layer.cpu_linear = torch.nn.functional.linear
+         return
+ 
++    # Some recurrent layers reuse LinearBase only for sharded weight loading,
++    # then reshape the parameter into a convolution kernel (for example Qwen
++    # 3.5 GDN conv1d has shape [N, 1, K]). Their forward path consumes the
++    # weight directly, so there is no 2-D GEMM to dispatch or prepack.
++    if layer.weight.ndim != 2:
++        return
++
+     N, K = layer.weight.size()
+     dtype = layer.weight.dtype
+ 
+diff --git a/vllm/model_executor/models/config.py b/vllm/model_executor/models/config.py
+index c13ea53..839d5d4 100644
+--- a/vllm/model_executor/models/config.py
++++ b/vllm/model_executor/models/config.py
+@@ -18,6 +18,17 @@ if TYPE_CHECKING:
+ logger = init_logger(__name__)
+ 
+ 
++def _hybrid_attention_block_alignment(
++    *, use_mla: bool, use_cutlass_mla: bool, is_cpu: bool
++) -> int:
++    if use_mla:
++        return 128 if use_cutlass_mla else 64
++    # The native CPU attention kernels require 32-token KV-cache alignment;
++    # GPU FlashAttention requires only 16.  Account for this before padding
++    # the recurrent page so hybrid cache groups remain exactly equal-sized.
++    return 32 if is_cpu else 16
++
++
+ class VerifyAndUpdateConfig:
+     @staticmethod
+     def verify_and_update_config(vllm_config: "VllmConfig") -> None:
+@@ -203,11 +214,18 @@ class HybridAttentionMambaModelConfig(VerifyAndUpdateConfig):
+         # - MLA (Multi-head Latent Attention) requires larger alignment:
+         #   * CUTLASS_MLA backend: kernel_block_size 128 alignment
+         #   * Other MLA backends: kernel_block_size 64 alignment
++        use_cutlass_mla = (
++            model_config.use_mla
++            and attention_config.backend == AttentionBackendEnum.CUTLASS_MLA
++        )
++        from vllm.platforms import current_platform
++
++        kernel_block_alignment_size = _hybrid_attention_block_alignment(
++            use_mla=model_config.use_mla,
++            use_cutlass_mla=use_cutlass_mla,
++            is_cpu=current_platform.is_cpu(),
++        )
+         if model_config.use_mla:
+-            use_cutlass_mla = (
+-                attention_config.backend == AttentionBackendEnum.CUTLASS_MLA
+-            )
+-            kernel_block_alignment_size = 128 if use_cutlass_mla else 64
+             attn_page_size_1_token = MLAAttentionSpec(
+                 block_size=1,
+                 num_kv_heads=model_config.get_num_kv_heads(parallel_config),
+@@ -215,7 +233,6 @@ class HybridAttentionMambaModelConfig(VerifyAndUpdateConfig):
+                 dtype=kv_cache_dtype,
+             ).page_size_bytes
+         else:
+-            kernel_block_alignment_size = 16
+             attn_page_size_1_token = FullAttentionSpec(
+                 block_size=1,
+                 num_kv_heads=model_config.get_num_kv_heads(parallel_config),
+diff --git a/vllm/model_executor/models/qwen3_5.py b/vllm/model_executor/models/qwen3_5.py
+index 4cbe9b8..9d808e8 100644
+--- a/vllm/model_executor/models/qwen3_5.py
++++ b/vllm/model_executor/models/qwen3_5.py
+@@ -105,6 +105,20 @@ from .utils import (
+ logger = init_logger(__name__)
+ 
+ 
++def _qwen3_5_vision_quant_config(vllm_config: VllmConfig):
++    """Do not build quantized vision layers in text-only deployments.
++
++    The tower object is still constructed because the shared multimodal model
++    interface expects it, but ``_mark_tower_model`` excludes its weights from
++    loading.  Passing the global grouped-W4 config here would reject valid
++    vision dimensions (for example K=4304 with group size 32) before that
++    exclusion can take effect.
++    """
++    if vllm_config.model_config.multimodal_config.language_model_only:
++        return None
++    return vllm_config.quant_config
++
++
+ class Qwen3_5ProcessingInfo(Qwen3VLProcessingInfo):
+     def get_hf_config(self):
+         return self.ctx.get_hf_config(Qwen3_5Config)
+@@ -585,7 +599,7 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration, IsHybrid)
+         nn.Module.__init__(self)
+         self.update_packed_mapping(enable_lora=vllm_config.lora_config is not None)
+         config: Qwen3_5Config = vllm_config.model_config.hf_config
+-        quant_config = vllm_config.quant_config
++        vision_quant_config = _qwen3_5_vision_quant_config(vllm_config)
+         multimodal_config = vllm_config.model_config.multimodal_config
+ 
+         self.config = config
+@@ -598,7 +612,7 @@ class Qwen3_5ForConditionalGeneration(Qwen3VLForConditionalGeneration, IsHybrid)
+             self.visual = Qwen3_VisionTransformer(
+                 config.vision_config,
+                 norm_eps=getattr(config, "rms_norm_eps", 1e-6),
+-                quant_config=quant_config,
++                quant_config=vision_quant_config,
+                 prefix=maybe_prefix(prefix, "visual"),
+             )
+ 
+@@ -809,7 +823,7 @@ class Qwen3_5MoeForConditionalGeneration(
+         nn.Module.__init__(self)
+         self.update_packed_mapping(enable_lora=vllm_config.lora_config is not None)
+         config: Qwen3_5MoeConfig = vllm_config.model_config.hf_config
+-        quant_config = vllm_config.quant_config
++        vision_quant_config = _qwen3_5_vision_quant_config(vllm_config)
+         multimodal_config = vllm_config.model_config.multimodal_config
+ 
+         self.config = config
+@@ -822,7 +836,7 @@ class Qwen3_5MoeForConditionalGeneration(
+             self.visual = Qwen3_VisionTransformer(
+                 config.vision_config,
+                 norm_eps=getattr(config, "rms_norm_eps", 1e-6),
+-                quant_config=quant_config,
++                quant_config=vision_quant_config,
+                 prefix=maybe_prefix(prefix, "visual"),
+             )
+ 
+diff --git a/vllm/platforms/cpu.py b/vllm/platforms/cpu.py
+index 7fbad3e..9f42bc1 100644
+--- a/vllm/platforms/cpu.py
++++ b/vllm/platforms/cpu.py
+@@ -69,6 +69,13 @@ class LogicalCPUInfo:
+             return obj_dict
+ 
+ 
++def _cpu_default_block_size(block_size: int, user_specified: bool) -> int:
++    """Apply the CPU minimum/alignment without shrinking hybrid block sizes."""
++    if user_specified:
++        return block_size
++    return ((max(128, block_size) + 31) // 32) * 32
++
++
+ class CpuPlatform(Platform):
+     _enum = PlatformEnum.CPU
+     device_name: str = "cpu"
+@@ -162,8 +169,10 @@ class CpuPlatform(Platform):
+ 
+         cache_config = vllm_config.cache_config
+ 
+-        if not cache_config.user_specified_block_size:
+-            cache_config.block_size = 128
++        cache_config.block_size = _cpu_default_block_size(
++            cache_config.block_size,
++            cache_config.user_specified_block_size,
++        )
+ 
+         if cache_config.block_size % 32 != 0:
+             logger.warning(
+-- 
+2.39.5 (Apple Git-154)
+

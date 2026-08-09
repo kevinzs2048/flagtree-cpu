@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vllm-triton-cpu-qwen35"
+version = "0.1.0"
+description = "Safe Apple Silicon vLLM hook for Qwen3.5 W4A8 on Triton-CPU"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+triton_cpu_qwen35 = "vllm_triton_cpu_qwen35:register"
+
+[tool.setuptools.packages.find]
+where = ["src"]

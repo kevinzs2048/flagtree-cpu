@@ -4,8 +4,6 @@ project(LibTritonJitQ4Op LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
-
 if(NOT DEFINED TRITON_JIT_ROOT)
   message(FATAL_ERROR "TRITON_JIT_ROOT is required")
 endif()
@@ -30,3 +28,23 @@ target_compile_definitions(triton_jit_q4_op PRIVATE
 set_target_properties(triton_jit_q4_op PROPERTIES
   PREFIX "lib"
   BUILD_RPATH "${TRITON_JIT_BUILD}/src")
+
+# Keep the operator bundle relocatable.  The build helper places
+# libtriton_jit beside this library, so the runtime must search relative to
+# the plugin rather than a developer-specific absolute build directory.
+if(APPLE)
+  set_target_properties(triton_jit_q4_op PROPERTIES
+    BUILD_RPATH "@loader_path;${TRITON_JIT_BUILD}/src"
+    INSTALL_RPATH "@loader_path")
+  if(OpenMP_libomp_LIBRARY)
+    add_custom_command(TARGET triton_jit_q4_op POST_BUILD
+      COMMAND "${CMAKE_INSTALL_NAME_TOOL}" -change
+        "${OpenMP_libomp_LIBRARY}" "@rpath/libomp.dylib"
+        "$<TARGET_FILE:triton_jit_q4_op>"
+      VERBATIM)
+  endif()
+elseif(UNIX)
+  set_target_properties(triton_jit_q4_op PROPERTIES
+    BUILD_RPATH "$ORIGIN;${TRITON_JIT_BUILD}/src"
+    INSTALL_RPATH "$ORIGIN")
+endif()

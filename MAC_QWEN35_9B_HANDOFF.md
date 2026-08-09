@@ -27,6 +27,47 @@
 
 MiniCPM5/vLLM 结果证明了这条路径可以做到端到端替换，但这些数据不能直接当作 Qwen3.5-9B 的性能数据。
 
+### 2026-08-10 M4 Pro vLLM 实机结果
+
+本轮已经在 Apple M4 Pro 48GB 上完成 Qwen3.5-9B text-only 的 vLLM
+W4A8 接入。模型是 Compressor 生成的 compressed-tensors checkpoint：
+权重 signed INT4、group size 32、静态对称量化，激活为动态 per-token
+signed INT8。`lm_head` 与 GDN Conv1d 保持 BF16。
+
+- vLLM：v0.19.0 基线加本交接的 Qwen3.5/CPU hybrid 修复。
+- Triton-CPU：3.7.2 in-tree CPU backend；MLIR/TTCIR lowering 使用锁定的
+  LLVM，Darwin 最终汇编和扩展模块使用 AppleClang 16。
+- Linear：152 个 text-only G32 W4A8 层已由 FlagGems router 准备并走
+  `libtriton_jit` Mach-O arm64 Q4 operator。
+- GDN：Darwin 上 causal-conv 和 recurrent update 使用 FP32 PyTorch 安全
+  实现；已知会触发 SoC watchdog 的 packed Triton recurrent path 被强制关闭。
+- Hybrid KV cache：CPU attention block 按 32 token 对齐为 544，attention
+  与 recurrent page 大小一致。
+- 端到端 smoke：模型初始化 16.715 秒；`你好` greedy 生成 3 token 用时
+  1.564 秒，token IDs 为 `[3709, 95815, 111354]`，文本为
+  `，我是一名`。这只证明 prefill + 两轮 decode 正确贯通，不是正式性能数据。
+
+可复现入口：
+
+```bash
+cd /Users/kevin/triton-opt-cpu-qwen35
+
+# vLLM fork 尚未建立；从官方 v0.19.0 基线应用随仓库交付的 commit patch。
+cd /Users/kevin/qwen36-w4a8/vllm-0.19.0
+git checkout v0.19.0
+git am /Users/kevin/triton-opt-cpu-qwen35/integrations/vllm/patches/vllm-0.19.0-qwen35-m4-w4a8.patch
+uv pip install --python .venv/bin/python --no-deps -e \
+  /Users/kevin/triton-opt-cpu-qwen35/integrations/vllm/qwen35_m4_plugin
+
+cd /Users/kevin/triton-opt-cpu-qwen35
+VLLM_PYTHON=/Users/kevin/qwen36-w4a8/vllm-0.19.0/.venv/bin/python \
+  integrations/vllm/build_libtriton_jit_q4_op.sh
+
+VLLM_ROOT=/Users/kevin/qwen36-w4a8/vllm-0.19.0 \
+MODEL_DIR=/Users/kevin/models/Qwen3.5-9B-W4A8-G32 \
+  integrations/vllm/run_qwen35_m4_w4a8.sh --max-tokens 3
+```
+
 ## 2. Mac 上必须保持的条件
 
 Apple M4 Pro 没有 SVE2，正确目标是 Neon DotProd/I8MM：
@@ -50,12 +91,17 @@ python3 -m venv /Users/kevin/venvs/triton-qwen35
 source /Users/kevin/venvs/triton-qwen35/bin/activate
 python -m pip install -U pip setuptools wheel ninja cmake
 python -m pip install torch==2.13.0 transformers==5.13.0 safetensors sentencepiece
-export TRITON_PLUGIN_DIRS="$PWD/third_party/cpu"
+unset TRITON_PLUGIN_DIRS
 make dev-install PYTHON=python
 make PYTHON=python
 ```
 
-`TRITON_PLUGIN_DIRS` 不能省略。CPU backend 在 Triton 3.7.2 中以外部 plugin 形式接入；如果干净 venv 安装时没有该变量，`triton.runtime` 会报告 `0 active drivers`。
+这个锁定提交已经通过 `setup.py` 的
+`BackendInstaller.copy(["nvidia", "amd", "cpu"])` 将 CPU backend 作为
+in-tree backend 接入，因此必须清除 `TRITON_PLUGIN_DIRS`。把
+`third_party/cpu` 再作为 external plugin 传入会让安装器查找不存在的
+`third_party/cpu/backend/name.conf`，使干净 clone 的 editable install 在
+metadata 阶段失败。
 
 如果 Transformers/PyTorch 的 Mac wheel 版本与上述不同，要在结果中记录实际版本，不要将不同版本的 eager/compiled 结果混在一起。
 
@@ -195,16 +241,29 @@ Q4 必须继续使用当前 exact G128/G32 format，不引入第二种私有 nib
 4. 分别接 Q8 和 Q4 Linear router。
 5. 用相同 prompt、prefill 长度和 decode token 数报 TTFT、tok/s、端到端时间和 Triton CPU 时间覆盖率。
 
-macOS 第一阶段使用 Hugging Face PyTorch runner，不依赖 vLLM。vLLM/libtriton_jit 生产接入仍在 CIX/Linux 上做；Mac 首先负责 Darwin 生成物、精度和 microbenchmark 验证。
+macOS 的 text-only vLLM/libtriton_jit 路径现已贯通；后续仍应按上述逐层
+顺序做精度和性能扩展，不能从短 smoke test 推断长上下文或并发性能。
 
-## 7. 当前未完成的事
+## 7. 本轮完成与剩余工作
 
-- 还没有 Qwen3.5-9B 全模型一键 patch/runner。
-- 还没有按 9B 全部 shape 生成的 Q4/Q8 Darwin AOT bundle。
-- 还没有 Qwen3.5-9B 的 Mac 端到端 eager/compiled 对比和算子时间覆盖率。
-- recurrent gated delta 的普通 Triton codegen 尚未达到可替代高性能 runtime 的水平。
-- full-attention 需重新验证 head-dim 256、4 KV heads、partial mRoPE=64 和长上下文，不能直接用旧 Qwen3 attention 结论。
-- 视觉塔尚未适配，应在 text-only 稳定之后单独 profile。
+已完成：
+
+- Qwen3.5-9B W4A8 text-only vLLM 一键 runner。
+- Group32 W4A8 `libtriton_jit` Darwin bundle、Mach-O loader-relative rpath
+  和单一 torch `libomp` 装载路径。
+- 模型加载、prefill 和两轮 decode 端到端验证。
+- Darwin GDN watchdog 风险隔离；默认配置不会进入 packed recurrent kernel。
+
+剩余工作：
+
+- GDN causal-conv/recurrent 的 Triton-CPU 安全实现尚未恢复；当前 PyTorch
+  fallback 以正确性和整机安全为先。
+- Prefix caching 和 speculative decode 在安全 fallback 中明确不支持。
+- 还没有 Mac eager/compiled 对比、长上下文、并发、TTFT/tok/s 正式报告和
+  算子时间覆盖率。
+- lm_head 仍为 BF16；Q4/Q8 vocab head 需要单独做内存、精度和调度验证。
+- full-attention 仍需验证长上下文下的 head-dim 256、4 KV heads 和 partial
+  mRoPE=64；视觉塔尚未适配。
 
 ## 8. 验收标准
 
