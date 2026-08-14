@@ -2,6 +2,7 @@ import functools
 import hashlib
 import os
 import platform
+import re
 import tempfile
 from pathlib import Path
 
@@ -25,6 +26,15 @@ def min_dot_size(target: GPUTarget):
 
 VecLib = cpu.passes.ttcpuir.VecLib
 Ukernels = cpu.passes.ttcpuir.Ukernels
+
+
+def _normalize_darwin_aarch64_assembly(assembly: str) -> str:
+    """Translate LLVM's GNU-style I8MM spelling for AppleClang."""
+    return re.sub(
+        r"\bsmmla\.4s\s+v(\d+),\s*v(\d+),\s*v(\d+)",
+        r"smmla v\1.4s, v\2.16b, v\3.16b",
+        assembly,
+    )
 
 
 @dataclass(frozen=True)
@@ -156,11 +166,6 @@ class CPUBackend(BaseBackend):
                 and not getenv_bool("TRITON_CPU_DISABLE_SVE2_I8MM", False))
 
     def arm_assembler_flags(self) -> list[str]:
-        if platform.system() == "Darwin" and self.supports_fixed_i8mm():
-            # Host-only JIT: let Apple Clang select the exact local CPU.  This
-            # avoids relying on GNU-style extension spellings across Xcode
-            # releases while still enabling the integrated assembler.
-            return ["-mcpu=native"]
         fp16 = "+fp16" if "fullfp16" in self.cpu_features else ""
         bf16 = "+bf16" if "bf16" in self.cpu_features else ""
         extensions = fp16 + bf16
@@ -178,6 +183,16 @@ class CPUBackend(BaseBackend):
         fixed_width = self.use_fixed_i8mm()
         features = []
         for feature in sorted(self.cpu_features):
+            is_streaming = (
+                feature == "sme" or feature.startswith("sme-")
+                or feature == "sme2" or feature.startswith("sme2-")
+            )
+            # SME requires an explicitly streaming-aware lowering and ABI.
+            # Ordinary Triton CPU kernels must not inherit SME merely because
+            # the JIT host advertises it.  A future SME backend should create
+            # and dispatch a separate kernel variant with the required attrs.
+            if is_streaming:
+                continue
             # Forcing the fixed path on an SVE machine must model a genuinely
             # non-SVE target. Otherwise LLVM can introduce scalable vector
             # instructions while optimizing ordinary integer expressions even
@@ -185,7 +200,6 @@ class CPUBackend(BaseBackend):
             disable = fixed_width and (
                 feature == "sve" or feature.startswith("sve-")
                 or feature == "sve2" or feature.startswith("sve2-")
-                or feature == "sme" or feature.startswith("sme-")
             )
             features.append(("-" if disable else "+") + feature)
         return ",".join(features)
@@ -275,7 +289,10 @@ class CPUBackend(BaseBackend):
             cpu.passes.ttcpuir.add_convert_dot_to_ukernels(pm, ukernels)
             passes.common.add_canonicalizer(pm)
             passes.common.add_cse(pm)
-        is_aarch64_neon = ((self.cpu_arch == "aarch64" or self.cpu_arch == "armv8")
+        # LLVM reports Darwin AArch64 triples as ``arm64-apple-*``. Treat that
+        # spelling exactly like ``aarch64`` here; otherwise the packed INT8
+        # recognizer is silently disabled and lowers to generic vector math.
+        is_aarch64_neon = (self.cpu_arch in ("aarch64", "arm64", "armv8")
                            and 'neon' in self.cpu_features)
         convert_bf16_dot_product = (is_aarch64_neon and 'fp-armv8' in self.cpu_features
                                     and 'bf16' in self.cpu_features)
@@ -407,6 +424,12 @@ class CPUBackend(BaseBackend):
     def make_so(self, src, metadata, options):
         with tempfile.TemporaryDirectory() as tmpdir:
             asm_path = os.path.join(tmpdir, "kernel.s")
+            if platform.system() == "Darwin" and self.cpu_arch in (
+                "aarch64",
+                "arm64",
+                "armv8",
+            ):
+                src = _normalize_darwin_aarch64_assembly(src)
             Path(asm_path).write_text(src)
             lib_dirs = cpu_driver.library_dirs
             libs = ["m", "TritonCPURuntime", "sleef"]
