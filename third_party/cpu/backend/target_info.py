@@ -20,6 +20,7 @@ _LINUX_AARCH64_FEATURE_MAP = {
 _DARWIN_AARCH64_FEATURE_MAP = {
     "hw.optional.arm.FEAT_DotProd": "dotprod",
     "hw.optional.arm.FEAT_FP16": "fullfp16",
+    "hw.optional.arm.FEAT_BF16": "bf16",
     "hw.optional.arm.FEAT_I8MM": "i8mm",
 }
 

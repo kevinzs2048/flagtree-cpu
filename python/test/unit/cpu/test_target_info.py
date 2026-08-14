@@ -4,7 +4,7 @@ import pytest
 
 from triton.backends.cpu import target_info
 from triton.backends.cpu import compiler as cpu_compiler
-from triton.backends.cpu.compiler import CPUBackend
+from triton.backends.cpu.compiler import CPUBackend, _normalize_darwin_aarch64_assembly
 
 
 def test_parse_linux_cpuinfo_uses_features_common_to_all_cpus():
@@ -62,6 +62,7 @@ def test_supplement_aarch64_features_uses_darwin_sysctl(monkeypatch):
     reported = {
         "hw.optional.arm.FEAT_DotProd": True,
         "hw.optional.arm.FEAT_FP16": True,
+        "hw.optional.arm.FEAT_BF16": True,
         "hw.optional.arm.FEAT_I8MM": True,
     }
 
@@ -73,6 +74,7 @@ def test_supplement_aarch64_features_uses_darwin_sysctl(monkeypatch):
         "neon",
         "dotprod",
         "fullfp16",
+        "bf16",
         "i8mm",
     }
 
@@ -105,7 +107,9 @@ def test_arm_assembler_flags_select_host_compatible_isa(monkeypatch):
     monkeypatch.delenv("TRITON_CPU_DISABLE_SVE2_I8MM", raising=False)
 
     monkeypatch.setattr(cpu_compiler.platform, "system", lambda: "Darwin")
-    assert backend.arm_assembler_flags() == ["-mcpu=native"]
+    assert backend.arm_assembler_flags() == [
+        "-march=armv8.6-a+dotprod+i8mm"
+    ]
 
     monkeypatch.setattr(cpu_compiler.platform, "system", lambda: "Linux")
     assert backend.arm_assembler_flags() == [
@@ -135,6 +139,39 @@ def test_arm_assembler_flags_select_host_compatible_isa(monkeypatch):
     monkeypatch.setenv("TRITON_CPU_DISABLE_SVE2_I8MM", "1")
     assert not backend.use_sve2_i8mm()
     assert not backend.use_fixed_i8mm()
+
+
+@pytest.mark.parametrize("sve_vector_bits", (0, 128))
+def test_streaming_features_are_not_implicitly_enabled(monkeypatch, sve_vector_bits):
+    backend = object.__new__(CPUBackend)
+    backend.cpu_arch = "aarch64"
+    backend.cpu_features = {
+        "neon",
+        "dotprod",
+        "i8mm",
+        "sve",
+        "sve2",
+        "sme",
+        "sme2",
+    }
+    backend.sve_vector_bits = sve_vector_bits
+    monkeypatch.delenv("TRITON_CPU_FIXED_I8MM", raising=False)
+    monkeypatch.delenv("TRITON_CPU_DISABLE_SVE2_I8MM", raising=False)
+
+    target_features = set(backend.llvm_target_features().split(","))
+    assert "+sme" not in target_features
+    assert "+sme2" not in target_features
+    expected_prefix = "+" if sve_vector_bits == 128 else "-"
+    assert f"{expected_prefix}sve" in target_features
+    assert f"{expected_prefix}sve2" in target_features
+
+
+def test_normalize_darwin_aarch64_smmla_syntax():
+    assembly = "\tsmmla.4s v23, v24, v20\n\tret\n"
+
+    assert _normalize_darwin_aarch64_assembly(assembly) == (
+        "\tsmmla v23.4s, v24.16b, v20.16b\n\tret\n"
+    )
 
 
 @pytest.mark.parametrize("prctl_value, expected", [(16, 128), (32 | 0x40000, 256), (-1, 0)])
