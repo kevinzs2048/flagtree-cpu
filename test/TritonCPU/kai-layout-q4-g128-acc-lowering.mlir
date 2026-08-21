@@ -1,4 +1,6 @@
-// RUN: triton-opt %s -triton-cpu-convert-dot-to-sve2-i8mm | FileCheck %s
+// RUN: triton-opt %s \
+// RUN:   -triton-cpu-convert-dot-to-sve2-i8mm="fixed-only=true" \
+// RUN:   | FileCheck %s
 
 // A native G128 Q4 kernel rolls four physical K32 panels into one integer
 // accumulator before applying the common scale and zero-point correction.
@@ -7,7 +9,9 @@
 //
 // CHECK-LABEL: @kai_q4_g128_integer_acc
 // CHECK-COUNT-16: llvm.call_intrinsic "llvm.aarch64.neon.smmla.v4i32.v16i8"
-// CHECK: arith.addi %{{.*}}, %{{.*}} : vector<4x4xi32>
+// The loop-carried C fragments feed SMMLA directly. Do not materialize a
+// zero-based dot followed by a logical 4x4 vector add on every K32 group.
+// CHECK-NOT: arith.addi %{{.*}}, %{{.*}} : vector<4x4xi32>
 // CHECK-NOT: triton_cpu.dot
 
 module {
@@ -65,6 +69,8 @@ module {
   // preserving each dot's independent C accumulator.
   // CHECK-LABEL: @kai_q4_g128_shared_rhs
   // CHECK-COUNT-32: llvm.call_intrinsic "llvm.aarch64.neon.smmla.v4i32.v16i8"
+  // Standalone dots retain the established zero-dot-plus-C form so decode
+  // kernels do not inherit the prefill-only loop-carried accumulator rewrite.
   // CHECK-COUNT-2: arith.addi %{{.*}}, %{{.*}} : vector<4x4xi32>
   // CHECK-NOT: triton_cpu.dot
   tt.func public @kai_q4_g128_shared_rhs(
