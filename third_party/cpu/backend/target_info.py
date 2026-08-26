@@ -5,16 +5,19 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional, Set
 
 
-# Linux /proc/cpuinfo names mapped to LLVM AArch64 target-feature names.
-# Keep this list narrow: unlike SVE-specific bf16/i8mm capabilities, these
-# tokens describe the corresponding architectural extension used by LLVM.
+# Linux /proc/cpuinfo names mapped to LLVM AArch64 target-feature names. Keep
+# this list to architectural extensions that can affect generated instructions.
 _LINUX_AARCH64_FEATURE_MAP = {
+    "fp": "fp-armv8",
+    "asimd": "neon",
     "asimddp": "dotprod",
     # Linux reports scalar and Advanced-SIMD FP16 separately.  LLVM's
     # ``fullfp16`` feature is the one that permits vector .8h arithmetic.
     "asimdhp": "fullfp16",
     "bf16": "bf16",
     "i8mm": "i8mm",
+    "sve": "sve",
+    "sve2": "sve2",
 }
 
 _DARWIN_AARCH64_FEATURE_MAP = {
@@ -72,9 +75,23 @@ def supplement_aarch64_features(
     except OSError:
         return features
     linux_features = parse_linux_cpuinfo_features(cpuinfo)
-    for linux_name, llvm_name in _LINUX_AARCH64_FEATURE_MAP.items():
-        if linux_name in linux_features:
-            features.add(llvm_name)
+    if not linux_features:
+        return features
+
+    # LLVM host detection and /proc/cpuinfo can observe different CPUs on a
+    # heterogeneous machine.  Treat the OS-reported intersection as
+    # authoritative for every AArch64 feature that controls code generation:
+    # retaining a feature seen by LLVM on only the current core can otherwise
+    # produce an illegal instruction after the process migrates to another
+    # allowed core.
+    mapped_features = set(_LINUX_AARCH64_FEATURE_MAP.values())
+    common_features = {
+        llvm_name
+        for linux_name, llvm_name in _LINUX_AARCH64_FEATURE_MAP.items()
+        if linux_name in linux_features
+    }
+    features.difference_update(mapped_features - common_features)
+    features.update(common_features)
     return features
 
 

@@ -33,16 +33,15 @@ not only used to select the MLIR pass. Fixed-mode validation also passes
 explicit negative SVE/SVE2 features, preventing later LLVM vectorization from
 reintroducing scalable instructions.
 
-Darwin host JIT assembly uses `-mcpu=native`; Linux uses explicit
+Darwin and Linux host JIT assembly use explicit
 `-march=armv8.6-a+sve2+i8mm` or
 `-march=armv8.6-a+dotprod+i8mm`, with `+fp16` and `+bf16` appended when the
-OS-reported host features support them. This keeps LLVM's selected `.8h`
+OS-reported host features support them. Linux also passes `-mcpu=native`
+before the backend-specific `-march` flag. This keeps LLVM's selected `.8h`
 instructions consistent with the system assembler feature set. CIX
 forced-fixed tests validate fixed-width
 code generation and numerics, but they are not a substitute for Apple M4 Pro
-latency measurements. Native M4 Pro correctness, latency, and generated-object
-audits are recorded separately in
-[`APPLE_M4_PRO_CODEGEN_RESULTS.md`](../../APPLE_M4_PRO_CODEGEN_RESULTS.md).
+latency measurements.
 
 ## Results
 

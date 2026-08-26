@@ -30,17 +30,38 @@ def test_supplement_aarch64_features(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(target_info.platform, "machine", lambda: "aarch64")
     cpuinfo = tmp_path / "cpuinfo"
     cpuinfo.write_text(
-        "Features : fp asimd asimdhp asimddp i8mm bf16 svebf16\n"
+        "Features : fp asimd asimdhp asimddp i8mm bf16 sve sve2 svebf16\n"
     )
 
     assert target_info.supplement_aarch64_features({"neon", "sve2"}, cpuinfo_path=cpuinfo) == {
+        "fp-armv8",
         "neon",
+        "sve",
         "sve2",
         "dotprod",
         "fullfp16",
         "i8mm",
         "bf16",
     }
+
+
+def test_supplement_aarch64_features_removes_non_common_llvm_features(
+    monkeypatch, tmp_path: Path
+):
+    monkeypatch.setattr(target_info.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(target_info.platform, "machine", lambda: "aarch64")
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text(
+        "processor : 0\n"
+        "Features : fp asimd asimddp i8mm sve sve2\n"
+        "processor : 1\n"
+        "Features : fp asimd asimddp\n"
+    )
+
+    assert target_info.supplement_aarch64_features(
+        {"fp-armv8", "neon", "dotprod", "i8mm", "sve", "sve2"},
+        cpuinfo_path=cpuinfo,
+    ) == {"fp-armv8", "neon", "dotprod"}
 
 
 def test_supplement_features_is_noop_off_aarch64(monkeypatch):
