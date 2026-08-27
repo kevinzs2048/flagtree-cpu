@@ -119,6 +119,24 @@ def test_fixed_i8mm_mode_is_used_without_sve2(monkeypatch):
     assert not backend.use_fixed_i8mm()
 
 
+def test_a720_bf16_store_workaround_requires_deployment_profile(monkeypatch):
+    backend = object.__new__(CPUBackend)
+    backend.cpu_arch = "aarch64"
+    backend.cpu_name = "cortex-a720"
+
+    monkeypatch.delenv("TRITON_CPU_A720_BF16_STORE_WORKAROUND", raising=False)
+    generic = backend.parse_options({})
+    assert not generic.a720_bf16_store_workaround
+
+    monkeypatch.setenv("TRITON_CPU_A720_BF16_STORE_WORKAROUND", "1")
+    profiled = backend.parse_options({})
+    assert profiled.a720_bf16_store_workaround
+    assert generic.hash() != profiled.hash()
+
+    backend.cpu_name = "apple-m4"
+    assert not backend.parse_options({}).a720_bf16_store_workaround
+
+
 def test_arm_assembler_flags_select_host_compatible_isa(monkeypatch):
     backend = object.__new__(CPUBackend)
     backend.cpu_arch = "arm64"

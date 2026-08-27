@@ -52,7 +52,8 @@ requires_cortex_a720 = pytest.mark.skipif(
 
 
 @requires_cortex_a720
-def test_a720_independent_bf16_loop_store_avoids_pairing():
+def test_a720_independent_bf16_loop_store_avoids_pairing(monkeypatch):
+    monkeypatch.setenv("TRITON_CPU_A720_BF16_STORE_WORKAROUND", "1")
 
     @triton.jit
     def kernel(input_ptr, weight_ptr, output_ptr, N: tl.constexpr):

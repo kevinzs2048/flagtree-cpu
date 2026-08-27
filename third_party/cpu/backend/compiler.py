@@ -71,6 +71,10 @@ class CPUOptions:
     # TODO: We may introduce CPU-specific options like # of cores.
     ukernels: str = None
     assume_in_bounds: bool = False
+    # Cortex-A720 deployment profiles may enable the store-pair workaround.
+    # Keep microarchitecture policy out of automatic ISA selection: Linux can
+    # report the same LLVM CPU name for heterogeneous A720/A520 affinities.
+    a720_bf16_store_workaround: bool = False
 
     def __post_init__(self):
         pass
@@ -213,6 +217,13 @@ class CPUBackend(BaseBackend):
             args["supported_fp8_dtypes"] = tuple(sorted(supported_fp8_dtypes))
         if "assume_in_bounds" not in args:
             args["assume_in_bounds"] = getenv_bool("TRITON_CPU_ASSUME_IN_BOUNDS", False)
+        if "a720_bf16_store_workaround" not in args:
+            requested = getenv_bool("TRITON_CPU_A720_BF16_STORE_WORKAROUND", False)
+            args["a720_bf16_store_workaround"] = (
+                requested
+                and self.cpu_arch in ("aarch64", "arm64", "armv8")
+                and self.cpu_name.lower() == "cortex-a720"
+            )
         return CPUOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -386,7 +397,7 @@ class CPUBackend(BaseBackend):
         # so in-place kernels can be excluded by exact load/store addresses.
         # Keeping that one independent-output store as two STRs removes the
         # alignment cliff while preserving the 16-element compute tile.
-        if self.cpu_name == "cortex-a720":
+        if options.a720_bf16_store_workaround:
             cpu.passes.ttcpuir.add_mark_wide_bf16_stores_volatile(pm)
         if os.environ.get("TRITON_DISABLE_LINE_INFO", "0") == "0":
             passes.llvmir.add_di_scope(pm)
