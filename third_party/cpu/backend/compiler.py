@@ -28,6 +28,32 @@ VecLib = cpu.passes.ttcpuir.VecLib
 Ukernels = cpu.passes.ttcpuir.Ukernels
 
 
+# LLVM and GNU/Clang use different names for a few AArch64 architecture
+# extensions. Any feature LLVM may use while emitting assembly must also be
+# enabled for the system assembler; a later ``-march`` otherwise overrides
+# ``-mcpu=native`` and can reject valid host instructions such as EOR3.
+_AARCH64_MARCH_EXTENSIONS = {
+    "aes": "aes",
+    "bf16": "bf16",
+    "crc": "crc",
+    "dotprod": "dotprod",
+    "fullfp16": "fp16",
+    "i8mm": "i8mm",
+    "lse": "lse",
+    "sha2": "sha2",
+    "sha3": "sha3",
+    "sm4": "sm4",
+    "sve": "sve",
+    "sve2": "sve2",
+    "sve-aes": "sve2-aes",
+    "sve-sha3": "sve2-sha3",
+    "sve-sm4": "sve2-sm4",
+    "sve2-aes": "sve2-aes",
+    "sve2-sha3": "sve2-sha3",
+    "sve2-sm4": "sve2-sm4",
+}
+
+
 def _normalize_darwin_aarch64_assembly(assembly: str) -> str:
     """Translate LLVM's GNU-style I8MM spelling for AppleClang."""
     return re.sub(
@@ -170,16 +196,20 @@ class CPUBackend(BaseBackend):
                 and not getenv_bool("TRITON_CPU_DISABLE_SVE2_I8MM", False))
 
     def arm_assembler_flags(self) -> list[str]:
-        fp16 = "+fp16" if "fullfp16" in self.cpu_features else ""
-        bf16 = "+bf16" if "bf16" in self.cpu_features else ""
-        extensions = fp16 + bf16
+        features = set(self.cpu_features)
         if self.use_fixed_i8mm():
-            return [f"-march=armv8.6-a+dotprod+i8mm{extensions}"]
-        if self.supports_sve2_i8mm():
-            return [f"-march=armv8.6-a+sve2+i8mm{extensions}"]
-        if self.supports_fixed_i8mm():
-            return [f"-march=armv8.6-a+dotprod+i8mm{extensions}"]
-        return []
+            features = {
+                feature for feature in features if not feature.startswith("sve")
+            }
+        elif not self.supports_sve2_i8mm() and not self.supports_fixed_i8mm():
+            return []
+
+        extensions = {
+            assembler_name
+            for feature, assembler_name in _AARCH64_MARCH_EXTENSIONS.items()
+            if feature in features
+        }
+        return ["-march=armv8.6-a+" + "+".join(sorted(extensions))]
 
     def llvm_target_features(self) -> str:
         if self.cpu_arch not in ("aarch64", "arm64", "armv8"):

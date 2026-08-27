@@ -157,19 +157,37 @@ def test_arm_assembler_flags_select_host_compatible_isa(monkeypatch):
 
     backend.cpu_features.update(("bf16", "fullfp16"))
     assert backend.arm_assembler_flags() == [
-        "-march=armv8.6-a+dotprod+i8mm+fp16+bf16"
+        "-march=armv8.6-a+bf16+dotprod+fp16+i8mm"
     ]
 
     backend.cpu_arch = "aarch64"
-    backend.cpu_features.add("sve2")
+    backend.cpu_features.update(
+        {
+            "aes",
+            "crc",
+            "lse",
+            "sha2",
+            "sha3",
+            "sm4",
+            "sve",
+            "sve2",
+            "sve-aes",
+            "sve-sha3",
+            "sve-sm4",
+        }
+    )
     backend.sve_vector_bits = 128
     assert backend.arm_assembler_flags() == [
-        "-march=armv8.6-a+sve2+i8mm+fp16+bf16"
+        "-march=armv8.6-a+aes+bf16+crc+dotprod+fp16+i8mm+lse+sha2+sha3+sm4"
+        "+sve+sve2+sve2-aes+sve2-sha3+sve2-sm4"
     ]
 
     monkeypatch.setenv("TRITON_CPU_FIXED_I8MM", "1")
     assert not backend.use_sve2_i8mm()
     assert backend.use_fixed_i8mm()
+    assert backend.arm_assembler_flags() == [
+        "-march=armv8.6-a+aes+bf16+crc+dotprod+fp16+i8mm+lse+sha2+sha3+sm4"
+    ]
     target_features = set(backend.llvm_target_features().split(","))
     assert "+dotprod" in target_features and "+i8mm" in target_features
     assert "-sve2" in target_features
