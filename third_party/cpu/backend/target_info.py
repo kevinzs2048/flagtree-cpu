@@ -4,7 +4,6 @@ import subprocess
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Set
 
-
 # Linux /proc/cpuinfo names mapped to LLVM AArch64 target-feature names. Keep
 # this list to architectural extensions that can affect generated instructions.
 _LINUX_AARCH64_FEATURE_MAP = {
@@ -49,9 +48,9 @@ def parse_linux_cpuinfo_features(text: str) -> Set[str]:
 
 
 def supplement_aarch64_features(
-    llvm_features: Iterable[str],
-    *,
-    cpuinfo_path: Path = Path("/proc/cpuinfo"),
+        llvm_features: Iterable[str],
+        *,
+        cpuinfo_path: Path = Path("/proc/cpuinfo"),
 ) -> Set[str]:
     """Supplement LLVM host detection with OS-reported AArch64 features."""
     features = set(llvm_features)
@@ -60,9 +59,7 @@ def supplement_aarch64_features(
     if platform.system() == "Darwin":
         for oid, llvm_name in _DARWIN_AARCH64_FEATURE_MAP.items():
             try:
-                result = subprocess.run(
-                    ["sysctl", "-n", oid], capture_output=True, text=True
-                )
+                result = subprocess.run(["sysctl", "-n", oid], capture_output=True, text=True)
             except OSError:
                 continue
             if result.returncode == 0 and result.stdout.strip() == "1":
@@ -95,9 +92,7 @@ def supplement_aarch64_features(
     return features
 
 
-def get_sve_vector_bits(
-    prctl: Optional[Callable[[int, int, int, int, int], int]] = None,
-) -> int:
+def get_sve_vector_bits(prctl: Optional[Callable[[int, int, int, int, int], int]] = None, ) -> int:
     """Return the current Linux thread's SVE vector length, or zero.
 
     SVE vector length is process/thread state, not merely a CPU property.  A

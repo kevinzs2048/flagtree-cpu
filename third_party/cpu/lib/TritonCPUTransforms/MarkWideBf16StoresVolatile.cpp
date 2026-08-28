@@ -55,8 +55,7 @@ struct MarkWideBf16StoresVolatile
     getOperation().walk([](LLVM::StoreOp store) {
       auto vectorTy = dyn_cast<VectorType>(store.getValue().getType());
       if (!vectorTy || vectorTy.isScalable() || vectorTy.getRank() != 1 ||
-          vectorTy.getShape()[0] != 16 ||
-          !vectorTy.getElementType().isBF16() ||
+          vectorTy.getShape()[0] != 16 || !vectorTy.getElementType().isBF16() ||
           !blockIsInCycle(store->getBlock()) ||
           blockLoadsFromStoreAddress(store))
         return;
@@ -71,8 +70,7 @@ namespace mlir {
 namespace triton {
 namespace cpu {
 
-std::unique_ptr<OperationPass<ModuleOp>>
-createMarkWideBf16StoresVolatile() {
+std::unique_ptr<OperationPass<ModuleOp>> createMarkWideBf16StoresVolatile() {
   return std::make_unique<MarkWideBf16StoresVolatile>();
 }
 

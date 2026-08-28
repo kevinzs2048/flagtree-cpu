@@ -204,13 +204,9 @@ def test_round_away_to_i32_codegen(device):
         device=device,
     )
     result = torch.empty(source.shape, dtype=torch.int32, device=device)
-    meta = kernel[(1,)](source, result, BLOCK_SIZE=source.numel())
+    meta = kernel[(1, )](source, result, BLOCK_SIZE=source.numel())
     magnitude = source.abs()
-    reference = (
-        (magnitude.floor() + (magnitude % 1 >= 0.5))
-        .copysign(source)
-        .to(torch.int32)
-    )
+    reference = ((magnitude.floor() + (magnitude % 1 >= 0.5)).copysign(source).to(torch.int32))
     torch.testing.assert_close(result, reference, rtol=0, atol=0)
     assembly = meta.asm["asm"].lower()
     assert "sleef" not in assembly

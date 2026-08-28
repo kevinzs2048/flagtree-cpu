@@ -29,9 +29,7 @@ def test_supplement_aarch64_features(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(target_info.platform, "system", lambda: "Linux")
     monkeypatch.setattr(target_info.platform, "machine", lambda: "aarch64")
     cpuinfo = tmp_path / "cpuinfo"
-    cpuinfo.write_text(
-        "Features : fp asimd asimdhp asimddp i8mm bf16 sve sve2 svebf16\n"
-    )
+    cpuinfo.write_text("Features : fp asimd asimdhp asimddp i8mm bf16 sve sve2 svebf16\n")
 
     assert target_info.supplement_aarch64_features({"neon", "sve2"}, cpuinfo_path=cpuinfo) == {
         "fp-armv8",
@@ -45,18 +43,14 @@ def test_supplement_aarch64_features(monkeypatch, tmp_path: Path):
     }
 
 
-def test_supplement_aarch64_features_removes_non_common_llvm_features(
-    monkeypatch, tmp_path: Path
-):
+def test_supplement_aarch64_features_removes_non_common_llvm_features(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(target_info.platform, "system", lambda: "Linux")
     monkeypatch.setattr(target_info.platform, "machine", lambda: "aarch64")
     cpuinfo = tmp_path / "cpuinfo"
-    cpuinfo.write_text(
-        "processor : 0\n"
-        "Features : fp asimd asimddp i8mm sve sve2\n"
-        "processor : 1\n"
-        "Features : fp asimd asimddp\n"
-    )
+    cpuinfo.write_text("processor : 0\n"
+                       "Features : fp asimd asimddp i8mm sve sve2\n"
+                       "processor : 1\n"
+                       "Features : fp asimd asimddp\n")
 
     assert target_info.supplement_aarch64_features(
         {"fp-armv8", "neon", "dotprod", "i8mm", "sve", "sve2"},
@@ -146,36 +140,28 @@ def test_arm_assembler_flags_select_host_compatible_isa(monkeypatch):
     monkeypatch.delenv("TRITON_CPU_DISABLE_SVE2_I8MM", raising=False)
 
     monkeypatch.setattr(cpu_compiler.platform, "system", lambda: "Darwin")
-    assert backend.arm_assembler_flags() == [
-        "-march=armv8.6-a+dotprod+i8mm"
-    ]
+    assert backend.arm_assembler_flags() == ["-march=armv8.6-a+dotprod+i8mm"]
 
     monkeypatch.setattr(cpu_compiler.platform, "system", lambda: "Linux")
-    assert backend.arm_assembler_flags() == [
-        "-march=armv8.6-a+dotprod+i8mm"
-    ]
+    assert backend.arm_assembler_flags() == ["-march=armv8.6-a+dotprod+i8mm"]
 
     backend.cpu_features.update(("bf16", "fullfp16"))
-    assert backend.arm_assembler_flags() == [
-        "-march=armv8.6-a+bf16+dotprod+fp16+i8mm"
-    ]
+    assert backend.arm_assembler_flags() == ["-march=armv8.6-a+bf16+dotprod+fp16+i8mm"]
 
     backend.cpu_arch = "aarch64"
-    backend.cpu_features.update(
-        {
-            "aes",
-            "crc",
-            "lse",
-            "sha2",
-            "sha3",
-            "sm4",
-            "sve",
-            "sve2",
-            "sve-aes",
-            "sve-sha3",
-            "sve-sm4",
-        }
-    )
+    backend.cpu_features.update({
+        "aes",
+        "crc",
+        "lse",
+        "sha2",
+        "sha3",
+        "sm4",
+        "sve",
+        "sve2",
+        "sve-aes",
+        "sve-sha3",
+        "sve-sm4",
+    })
     backend.sve_vector_bits = 128
     assert backend.arm_assembler_flags() == [
         "-march=armv8.6-a+aes+bf16+crc+dotprod+fp16+i8mm+lse+sha2+sha3+sm4"
@@ -185,9 +171,7 @@ def test_arm_assembler_flags_select_host_compatible_isa(monkeypatch):
     monkeypatch.setenv("TRITON_CPU_FIXED_I8MM", "1")
     assert not backend.use_sve2_i8mm()
     assert backend.use_fixed_i8mm()
-    assert backend.arm_assembler_flags() == [
-        "-march=armv8.6-a+aes+bf16+crc+dotprod+fp16+i8mm+lse+sha2+sha3+sm4"
-    ]
+    assert backend.arm_assembler_flags() == ["-march=armv8.6-a+aes+bf16+crc+dotprod+fp16+i8mm+lse+sha2+sha3+sm4"]
     target_features = set(backend.llvm_target_features().split(","))
     assert "+dotprod" in target_features and "+i8mm" in target_features
     assert "-sve2" in target_features
@@ -226,9 +210,7 @@ def test_streaming_features_are_not_implicitly_enabled(monkeypatch, sve_vector_b
 def test_normalize_darwin_aarch64_smmla_syntax():
     assembly = "\tsmmla.4s v23, v24, v20\n\tret\n"
 
-    assert _normalize_darwin_aarch64_assembly(assembly) == (
-        "\tsmmla v23.4s, v24.16b, v20.16b\n\tret\n"
-    )
+    assert _normalize_darwin_aarch64_assembly(assembly) == ("\tsmmla v23.4s, v24.16b, v20.16b\n\tret\n")
 
 
 @pytest.mark.parametrize("prctl_value, expected", [(16, 128), (32 | 0x40000, 256), (-1, 0)])

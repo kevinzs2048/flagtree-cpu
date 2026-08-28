@@ -141,13 +141,15 @@ static bool hasOnlyReadOrNoEffects(scf::ForOp loop) {
       getEffectsRecursively(loop);
   if (!effects)
     return false;
-  return llvm::all_of(*effects, [](const MemoryEffects::EffectInstance &effect) {
-    return isa<MemoryEffects::Read>(effect.getEffect());
-  });
+  return llvm::all_of(*effects,
+                      [](const MemoryEffects::EffectInstance &effect) {
+                        return isa<MemoryEffects::Read>(effect.getEffect());
+                      });
 }
 
-static bool matchPackedQ4NestedG128Loop(
-    scf::ForOp outerLoop, PackedQ4NestedG128LoopCandidate &candidate) {
+static bool
+matchPackedQ4NestedG128Loop(scf::ForOp outerLoop,
+                            PackedQ4NestedG128LoopCandidate &candidate) {
   constexpr unsigned panelCount = 4;
   if (outerLoop.getNumRegionIterArgs() != panelCount ||
       outerLoop.getNumResults() != panelCount ||
@@ -201,9 +203,9 @@ static bool matchPackedQ4NestedG128Loop(
 // tile.  The complete original body, including the K32 loop and its packed-Q4
 // dots, is cloned verbatim.  A subsequent walk in this pass then applies the
 // normal packed-Q4/I8MM lowering to the cloned dots.
-static LogicalResult bufferPackedQ4NestedG128Outer(
-    PackedQ4NestedG128LoopCandidate &candidate,
-    PatternRewriter &rewriter) {
+static LogicalResult
+bufferPackedQ4NestedG128Outer(PackedQ4NestedG128LoopCandidate &candidate,
+                              PatternRewriter &rewriter) {
   scf::ForOp oldLoop = candidate.outerLoop;
   Location loc = oldLoop.getLoc();
   constexpr int64_t panelCount = 4;
@@ -224,9 +226,9 @@ static LogicalResult bufferPackedQ4NestedG128Outer(
     op_write(oldLoop.getInitArgs()[panel], buffer.memRef, indices);
   }
 
-  auto newLoop = scf::ForOp::create(
-      rewriter, loc, oldLoop.getLowerBound(), oldLoop.getUpperBound(),
-      oldLoop.getStep(), ValueRange{});
+  auto newLoop = scf::ForOp::create(rewriter, loc, oldLoop.getLowerBound(),
+                                    oldLoop.getUpperBound(), oldLoop.getStep(),
+                                    ValueRange{});
   // The zero-result builder inserts an empty yield.  Remove it before cloning
   // the original body, then recreate it after the buffer stores below.
   rewriter.eraseOp(newLoop.getBody()->getTerminator());
@@ -879,8 +881,7 @@ static bool matchQ4ScaleBroadcast(Value value, bool rowScale, Value &scale) {
   return true;
 }
 
-static bool matchQ4IntegerBroadcast(Value value, bool rowValue,
-                                    Value &source) {
+static bool matchQ4IntegerBroadcast(Value value, bool rowValue, Value &source) {
   auto broadcast = value.getDefiningOp<vector::BroadcastOp>();
   if (!broadcast)
     return false;
@@ -900,8 +901,7 @@ static bool matchQ4IntegerBroadcast(Value value, bool rowValue,
   auto shapedTy = dyn_cast<VectorType>(shape.getType());
   auto sourceTy = dyn_cast<VectorType>(shape.getSource().getType());
   SmallVector<int64_t, 2> expected =
-      rowValue ? SmallVector<int64_t, 2>{4, 1}
-               : SmallVector<int64_t, 2>{1, 4};
+      rowValue ? SmallVector<int64_t, 2>{4, 1} : SmallVector<int64_t, 2>{1, 4};
   if (!shapedTy || shapedTy.getShape() != ArrayRef<int64_t>(expected) ||
       !sourceTy || sourceTy.getShape() != ArrayRef<int64_t>({4}) ||
       !sourceTy.getElementType().isInteger(32))
@@ -918,8 +918,7 @@ static bool matchPackedQ4M4Epilogue(PackedQ4M4Dot dot, scf::ForOp loop,
   Value integerResult = dot.op.getResult();
   Value lhsZeroPoint;
   Value rhsSum;
-  if (auto subtract =
-          dyn_cast<arith::SubIOp>(*dot.op->getUsers().begin())) {
+  if (auto subtract = dyn_cast<arith::SubIOp>(*dot.op->getUsers().begin())) {
     if (subtract.getLhs() != dot.op.getResult() || !subtract->hasOneUse())
       return false;
     auto correction = subtract.getRhs().getDefiningOp<arith::MulIOp>();
@@ -954,15 +953,13 @@ static bool matchPackedQ4M4Epilogue(PackedQ4M4Dot dot, scf::ForOp loop,
       scaleAttr.getSplatValue<APFloat>().convertToDouble() != 0.0625)
     return false;
 
-  auto firstScaleMul =
-      dyn_cast<arith::MulFOp>(*fixedScale->getUsers().begin());
+  auto firstScaleMul = dyn_cast<arith::MulFOp>(*fixedScale->getUsers().begin());
   if (!firstScaleMul || !firstScaleMul->hasOneUse())
     return false;
   Value lhsScale;
   Value rhsScale;
   arith::MulFOp contribution;
-  Value firstOther =
-      getOtherMulOperand(firstScaleMul, fixedScale.getResult());
+  Value firstOther = getOtherMulOperand(firstScaleMul, fixedScale.getResult());
   if (matchQ4ScaleBroadcast(firstOther, true, lhsScale)) {
     // Non-reassociated source: ((dot / 16) * lhsScale) * rhsScale.
     auto rhsMul = dyn_cast<arith::MulFOp>(*firstScaleMul->getUsers().begin());
@@ -988,7 +985,7 @@ static bool matchPackedQ4M4Epilogue(PackedQ4M4Dot dot, scf::ForOp loop,
     return false;
   Value carried = add.getLhs() == contribution.getResult()   ? add.getRhs()
                   : add.getRhs() == contribution.getResult() ? add.getLhs()
-                                                              : Value{};
+                                                             : Value{};
   auto blockArg = dyn_cast<BlockArgument>(carried);
   if (!blockArg || blockArg.getOwner() != loop.getBody())
     return false;
@@ -1050,11 +1047,9 @@ using PackedQ4M4Accumulators = SmallVector<Value, 4>;
 // isolation used to reload and unpack those bytes once per panel.  Keeping the
 // four RHS vectors live only for one K16 segment mirrors an I8MM microkernel:
 // load/unpack B once, then visit every independent M4 row panel.
-static SmallVector<PackedQ4M4Accumulators, 4>
-emitPackedQ4M4DotsSharedRhs(Location loc, ArrayRef<MemBuffer> lhsPanels,
-                           const MemBuffer &rhsPacked,
-                           PatternRewriter &rewriter,
-                           ArrayRef<PackedQ4M4Accumulators> initial = {}) {
+static SmallVector<PackedQ4M4Accumulators, 4> emitPackedQ4M4DotsSharedRhs(
+    Location loc, ArrayRef<MemBuffer> lhsPanels, const MemBuffer &rhsPacked,
+    PatternRewriter &rewriter, ArrayRef<PackedQ4M4Accumulators> initial = {}) {
   Type i8Ty = rewriter.getI8Type();
   Type i32Ty = rewriter.getI32Type();
   auto v16i8Ty = VectorType::get({16}, i8Ty);
@@ -1100,8 +1095,8 @@ emitPackedQ4M4DotsSharedRhs(Location loc, ArrayRef<MemBuffer> lhsPanels,
                            rewriter));
         Value lhsHigh = vector::LoadOp::create(
             rewriter, loc, v16i8Ty, lhsPacked.memRef,
-            getFlatIndices(loc, lhsPacked,
-                           (segment + 2) * 32 + rowPair * 16, rewriter));
+            getFlatIndices(loc, lhsPacked, (segment + 2) * 32 + rowPair * 16,
+                           rewriter));
         for (int64_t colPair = 0; colPair < 2; ++colPair) {
           int64_t index = rowPair * 2 + colPair;
           Value &acc = panelAcc[panel][index];
@@ -1172,8 +1167,8 @@ splitPackedQ4M4Accumulator(Location loc, Value accumulator,
     for (int64_t colPair = 0; colPair < 2; ++colPair) {
       Value tile = vector::ExtractStridedSliceOp::create(
           rewriter, loc, accumulator,
-          ArrayRef<int64_t>{rowPair * 2, colPair * 2},
-          ArrayRef<int64_t>{2, 2}, ArrayRef<int64_t>{1, 1});
+          ArrayRef<int64_t>{rowPair * 2, colPair * 2}, ArrayRef<int64_t>{2, 2},
+          ArrayRef<int64_t>{1, 1});
       tiles.push_back(
           vector::ShapeCastOp::create(rewriter, loc, v4i32Ty, tile));
     }
@@ -1191,13 +1186,11 @@ static LogicalResult convertPackedQ4M4Dot(PackedQ4M4Dot &candidate,
   cpu::DotOp op = candidate.op;
   Location loc = op.getLoc();
   auto resultTy = cast<VectorType>(op.getC().getType());
-  SmallVector<Value, 4> tileAcc =
-      emitPackedQ4M4Dot(loc, candidate.lhsPacked, candidate.rhsPacked,
-                        rewriter);
-  SmallVector<Value, 4> rows =
-      formPackedQ4M4Rows(loc, tileAcc, rewriter);
-  Value result = arith::ConstantOp::create(
-      rewriter, loc, resultTy, rewriter.getZeroAttr(resultTy));
+  SmallVector<Value, 4> tileAcc = emitPackedQ4M4Dot(
+      loc, candidate.lhsPacked, candidate.rhsPacked, rewriter);
+  SmallVector<Value, 4> rows = formPackedQ4M4Rows(loc, tileAcc, rewriter);
+  Value result = arith::ConstantOp::create(rewriter, loc, resultTy,
+                                           rewriter.getZeroAttr(resultTy));
   for (int64_t row = 0; row < 4; ++row)
     result = vector::InsertOp::create(rewriter, loc, rows[row], result, row);
   result = arith::AddIOp::create(rewriter, loc, result, op.getC());
@@ -1206,8 +1199,7 @@ static LogicalResult convertPackedQ4M4Dot(PackedQ4M4Dot &candidate,
 }
 
 static bool samePackedBuffer(const MemBuffer &lhs, const MemBuffer &rhs) {
-  return lhs.memRef == rhs.memRef &&
-         llvm::equal(lhs.indices, rhs.indices);
+  return lhs.memRef == rhs.memRef && llvm::equal(lhs.indices, rhs.indices);
 }
 
 static bool canInsertSharedQ4DotBefore(ArrayRef<PackedQ4M4Dot> earlier,
@@ -1249,10 +1241,9 @@ convertPackedQ4M4DotGroup(ArrayRef<PackedQ4M4Dot> candidates,
   for (auto [candidate, tileAcc] : llvm::zip(candidates, allAcc)) {
     cpu::DotOp op = candidate.op;
     auto resultTy = cast<VectorType>(op.getC().getType());
-    SmallVector<Value, 4> rows =
-        formPackedQ4M4Rows(loc, tileAcc, rewriter);
-    Value result = arith::ConstantOp::create(
-        rewriter, loc, resultTy, rewriter.getZeroAttr(resultTy));
+    SmallVector<Value, 4> rows = formPackedQ4M4Rows(loc, tileAcc, rewriter);
+    Value result = arith::ConstantOp::create(rewriter, loc, resultTy,
+                                             rewriter.getZeroAttr(resultTy));
     for (int64_t row = 0; row < 4; ++row)
       result = vector::InsertOp::create(rewriter, loc, rows[row], result, row);
     result = arith::AddIOp::create(rewriter, loc, result, op.getC());
@@ -1296,11 +1287,11 @@ static Value clonePackedLoopValue(Value value, scf::ForOp oldLoop,
   return mapping.lookup(value);
 }
 
-static bool matchPackedQ4M4IntegerLoop(
-    scf::ForOp loop, PackedQ4M4IntegerLoopCandidate &candidate) {
+static bool
+matchPackedQ4M4IntegerLoop(scf::ForOp loop,
+                           PackedQ4M4IntegerLoopCandidate &candidate) {
   unsigned panelCount = loop.getNumRegionIterArgs();
-  if (panelCount < 1 || panelCount > 4 ||
-      loop.getNumResults() != panelCount)
+  if (panelCount < 1 || panelCount > 4 || loop.getNumResults() != panelCount)
     return false;
   if (!hasOnlyReadOrNoEffects(loop))
     return false;
@@ -1345,9 +1336,9 @@ static bool matchPackedQ4M4IntegerLoop(
 // Keep the K32 reduction in the native four-register-per-panel I8MM layout.
 // This removes the logical M4xN4 rebuild/split (zip) sequence from every K32
 // iteration and, more importantly, never creates a second accumulator tile.
-static LogicalResult convertPackedQ4M4IntegerLoop(
-    PackedQ4M4IntegerLoopCandidate &candidate,
-    PatternRewriter &rewriter) {
+static LogicalResult
+convertPackedQ4M4IntegerLoop(PackedQ4M4IntegerLoopCandidate &candidate,
+                             PatternRewriter &rewriter) {
   scf::ForOp oldLoop = candidate.loop;
   const MemBuffer &originalRhs = candidate.panels.front().rhsPacked;
   for (const PackedQ4M4Dot &panel : candidate.panels) {
@@ -1376,9 +1367,9 @@ static LogicalResult convertPackedQ4M4IntegerLoop(
         splitPackedQ4M4Accumulator(loc, panel, rewriter);
     initial.append(tiles.begin(), tiles.end());
   }
-  auto newLoop = scf::ForOp::create(
-      rewriter, loc, oldLoop.getLowerBound(), oldLoop.getUpperBound(),
-      oldLoop.getStep(), initial);
+  auto newLoop =
+      scf::ForOp::create(rewriter, loc, oldLoop.getLowerBound(),
+                         oldLoop.getUpperBound(), oldLoop.getStep(), initial);
   IRMapping mapping;
   mapping.map(oldLoop.getInductionVar(), newLoop.getInductionVar());
   rewriter.setInsertionPointToEnd(newLoop.getBody());
@@ -1387,15 +1378,13 @@ static LogicalResult convertPackedQ4M4IntegerLoop(
   MemBuffer sharedRhs;
   for (int64_t panel = 0; panel < panelCount; ++panel) {
     MemBuffer lhs = candidate.panels[panel].lhsPacked;
-    lhs.memRef =
-        clonePackedLoopValue(lhs.memRef, oldLoop, mapping, rewriter);
+    lhs.memRef = clonePackedLoopValue(lhs.memRef, oldLoop, mapping, rewriter);
     for (Value &index : lhs.indices)
       index = clonePackedLoopValue(index, oldLoop, mapping, rewriter);
     lhsPanels.push_back(lhs);
 
     MemBuffer rhs = candidate.panels[panel].rhsPacked;
-    rhs.memRef =
-        clonePackedLoopValue(rhs.memRef, oldLoop, mapping, rewriter);
+    rhs.memRef = clonePackedLoopValue(rhs.memRef, oldLoop, mapping, rewriter);
     for (Value &index : rhs.indices)
       index = clonePackedLoopValue(index, oldLoop, mapping, rewriter);
     if (panel == 0)
@@ -1413,8 +1402,7 @@ static LogicalResult convertPackedQ4M4IntegerLoop(
     carried.push_back(std::move(tiles));
   }
   SmallVector<PackedQ4M4Accumulators, 4> updated =
-      emitPackedQ4M4DotsSharedRhs(loc, lhsPanels, sharedRhs, rewriter,
-                                 carried);
+      emitPackedQ4M4DotsSharedRhs(loc, lhsPanels, sharedRhs, rewriter, carried);
   SmallVector<Value, 16> yielded;
   for (const PackedQ4M4Accumulators &tiles : updated)
     yielded.append(tiles.begin(), tiles.end());
@@ -1424,10 +1412,9 @@ static LogicalResult convertPackedQ4M4IntegerLoop(
   auto panelTy = VectorType::get({4, 4}, rewriter.getI32Type());
   for (int64_t panel = 0; panel < panelCount; ++panel) {
     ValueRange native = newLoop.getResults().slice(panel * 4, 4);
-    SmallVector<Value, 4> rows =
-        formPackedQ4M4Rows(loc, native, rewriter);
-    Value logical = arith::ConstantOp::create(
-        rewriter, loc, panelTy, rewriter.getZeroAttr(panelTy));
+    SmallVector<Value, 4> rows = formPackedQ4M4Rows(loc, native, rewriter);
+    Value logical = arith::ConstantOp::create(rewriter, loc, panelTy,
+                                              rewriter.getZeroAttr(panelTy));
     for (int64_t row = 0; row < 4; ++row)
       logical =
           vector::InsertOp::create(rewriter, loc, rows[row], logical, row);
@@ -1485,12 +1472,10 @@ static LogicalResult convertPackedQ4M4Loop(PackedQ4M4LoopCandidate &candidate,
     while (!isa<triton::FuncOp>(allocaPoint->getParentOp()))
       allocaPoint = allocaPoint->getParentOp();
     auto allRowsTy = VectorType::get({panelCount * 4, 4}, f32Ty);
-    rowBuffer =
-        allocateTmpBufferStack(loc, allRowsTy, allocaPoint, rewriter);
+    rowBuffer = allocateTmpBufferStack(loc, allRowsTy, allocaPoint, rewriter);
     for (int64_t row = 0; row < panelCount * 4; ++row)
-      vector::StoreOp::create(
-          rewriter, loc, initialRows[row], rowBuffer.memRef,
-          get2DIndices(loc, rowBuffer, row, 0, rewriter));
+      vector::StoreOp::create(rewriter, loc, initialRows[row], rowBuffer.memRef,
+                              get2DIndices(loc, rowBuffer, row, 0, rewriter));
   }
   Value fractionalBits = arith::ConstantIntOp::create(rewriter, loc, 4, 32);
   StringAttr scvtf =
@@ -1498,9 +1483,9 @@ static LogicalResult convertPackedQ4M4Loop(PackedQ4M4LoopCandidate &candidate,
 
   rewriter.setInsertionPoint(oldLoop);
   ValueRange loopInit = bufferFixedM16 ? ValueRange{} : ValueRange(initialRows);
-  auto newLoop = scf::ForOp::create(
-      rewriter, loc, oldLoop.getLowerBound(), oldLoop.getUpperBound(),
-      oldLoop.getStep(), loopInit);
+  auto newLoop =
+      scf::ForOp::create(rewriter, loc, oldLoop.getLowerBound(),
+                         oldLoop.getUpperBound(), oldLoop.getStep(), loopInit);
   // scf.for with no iter_args is built with an empty terminator.  The M16
   // buffered form emits the rewritten body itself, so remove that terminator
   // before appending operations and the final yield.
@@ -1538,20 +1523,17 @@ static LogicalResult convertPackedQ4M4Loop(PackedQ4M4LoopCandidate &candidate,
         clonePackedLoopValue(panel.lhsScale, oldLoop, mapping, rewriter);
     Value rhsScale =
         clonePackedLoopValue(panel.rhsScale, oldLoop, mapping, rewriter);
-    Value lhsZeroPoint =
-        panel.lhsZeroPoint
-            ? clonePackedLoopValue(panel.lhsZeroPoint, oldLoop, mapping,
-                                   rewriter)
-            : Value{};
-    Value rhsSum = panel.rhsSum
-                       ? clonePackedLoopValue(panel.rhsSum, oldLoop, mapping,
-                                              rewriter)
-                       : Value{};
+    Value lhsZeroPoint = panel.lhsZeroPoint
+                             ? clonePackedLoopValue(panel.lhsZeroPoint, oldLoop,
+                                                    mapping, rewriter)
+                             : Value{};
+    Value rhsSum = panel.rhsSum ? clonePackedLoopValue(panel.rhsSum, oldLoop,
+                                                       mapping, rewriter)
+                                : Value{};
 
     SmallVector<Value, 4> tileAcc =
         emitPackedQ4M4Dot(loc, lhsPacked, rhsPacked, rewriter);
-    SmallVector<Value, 4> dotRows =
-        formPackedQ4M4Rows(loc, tileAcc, rewriter);
+    SmallVector<Value, 4> dotRows = formPackedQ4M4Rows(loc, tileAcc, rewriter);
     for (int64_t row = 0; row < 4; ++row) {
       if (lhsZeroPoint) {
         Value zpScalar =
@@ -1567,8 +1549,7 @@ static LogicalResult convertPackedQ4M4Loop(PackedQ4M4LoopCandidate &candidate,
                             rewriter, loc, v4f32Ty, scvtf,
                             ValueRange{dotRows[row], fractionalBits})
                             .getResult(0);
-      Value lhsScalar =
-          vector::ExtractOp::create(rewriter, loc, lhsScale, row);
+      Value lhsScalar = vector::ExtractOp::create(rewriter, loc, lhsScale, row);
       Value lhsBroadcast =
           vector::BroadcastOp::create(rewriter, loc, v4f32Ty, lhsScalar);
       Value scale =
@@ -1576,12 +1557,12 @@ static LogicalResult convertPackedQ4M4Loop(PackedQ4M4LoopCandidate &candidate,
       Value contribution =
           arith::MulFOp::create(rewriter, loc, converted, scale);
       int64_t outputIndex = panelIndex * 4 + row;
-      Value oldRow = bufferFixedM16
-                         ? vector::LoadOp::create(
-                               rewriter, loc, v4f32Ty, rowBuffer.memRef,
-                               get2DIndices(loc, rowBuffer, outputIndex, 0,
-                                            rewriter))
-                         : outputRows[outputIndex];
+      Value oldRow =
+          bufferFixedM16
+              ? vector::LoadOp::create(
+                    rewriter, loc, v4f32Ty, rowBuffer.memRef,
+                    get2DIndices(loc, rowBuffer, outputIndex, 0, rewriter))
+              : outputRows[outputIndex];
       Value updated =
           arith::AddFOp::create(rewriter, loc, oldRow, contribution);
       if (bufferFixedM16) {
@@ -1608,8 +1589,7 @@ static LogicalResult convertPackedQ4M4Loop(PackedQ4M4LoopCandidate &candidate,
                     rewriter, loc, v4f32Ty, rowBuffer.memRef,
                     get2DIndices(loc, rowBuffer, panel * 4 + row, 0, rewriter))
               : newLoop.getResult(panel * 4 + row);
-      rebuilt = vector::InsertOp::create(
-          rewriter, loc, rowValue, rebuilt, row);
+      rebuilt = vector::InsertOp::create(rewriter, loc, rowValue, rebuilt, row);
     }
     rewriter.replaceAllUsesWith(oldLoop.getResult(panel), rebuilt);
   }
@@ -1733,8 +1713,7 @@ static bool matchPackedW8Prefill(cpu::DotOp op,
 static SmallVector<Value, 16>
 emitPackedW8PrefillSmmla(Location loc, ArrayRef<Value> lhsPanels,
                          Value rhsPanel, ValueRange initialAccumulators,
-                         bool fixedWidth,
-                         PatternRewriter &rewriter) {
+                         bool fixedWidth, PatternRewriter &rewriter) {
   Type i8Ty = rewriter.getI8Type();
   Type i32Ty = rewriter.getI32Type();
   auto panelTy = VectorType::get({4, 4, 8}, i8Ty);
@@ -1746,9 +1725,8 @@ emitPackedW8PrefillSmmla(Location loc, ArrayRef<Value> lhsPanels,
   Type operandTy = fixedWidth ? Type(v16i8Ty) : nxv16i8Ty;
   Type accumulatorTy = fixedWidth ? Type(v4i32Ty) : nxv4i32Ty;
   StringAttr smmla = StringAttr::get(
-      rewriter.getContext(), fixedWidth
-                                 ? "llvm.aarch64.neon.smmla.v4i32.v16i8"
-                                 : "llvm.aarch64.sve.smmla.nxv4i32");
+      rewriter.getContext(), fixedWidth ? "llvm.aarch64.neon.smmla.v4i32.v16i8"
+                                        : "llvm.aarch64.sve.smmla.nxv4i32");
 
   SmallVector<Value, 4> lhsPhysical;
   int64_t panelCount = lhsPanels.size();
@@ -1776,10 +1754,9 @@ emitPackedW8PrefillSmmla(Location loc, ArrayRef<Value> lhsPanels,
       Value packed =
           vector::ShapeCastOp::create(rewriter, loc, packed2x8Ty, rows);
       Value flat = vector::ShapeCastOp::create(rewriter, loc, v16i8Ty, packed);
-      lhsPacked.push_back(fixedWidth
-                              ? flat
-                              : insertFixedInScalable(loc, flat, operandTy,
-                                                      rewriter));
+      lhsPacked.push_back(
+          fixedWidth ? flat
+                     : insertFixedInScalable(loc, flat, operandTy, rewriter));
     }
 
     SmallVector<Value, 2> rhsPacked;
@@ -1790,10 +1767,9 @@ emitPackedW8PrefillSmmla(Location loc, ArrayRef<Value> lhsPanels,
       Value packed =
           vector::ShapeCastOp::create(rewriter, loc, packed2x8Ty, columns);
       Value flat = vector::ShapeCastOp::create(rewriter, loc, v16i8Ty, packed);
-      rhsPacked.push_back(fixedWidth
-                              ? flat
-                              : insertFixedInScalable(loc, flat, operandTy,
-                                                      rewriter));
+      rhsPacked.push_back(
+          fixedWidth ? flat
+                     : insertFixedInScalable(loc, flat, operandTy, rewriter));
     }
 
     for (int64_t rowPair = 0; rowPair < rowPairs; ++rowPair) {
@@ -1812,8 +1788,7 @@ emitPackedW8PrefillSmmla(Location loc, ArrayRef<Value> lhsPanels,
 }
 
 static SmallVector<Value, 16>
-splitPackedW8Accumulator(Location loc, Value accumulator,
-                         bool fixedWidth,
+splitPackedW8Accumulator(Location loc, Value accumulator, bool fixedWidth,
                          PatternRewriter &rewriter) {
   Type i32Ty = rewriter.getI32Type();
   auto accTy = cast<VectorType>(accumulator.getType());
@@ -1831,18 +1806,16 @@ splitPackedW8Accumulator(Location loc, Value accumulator,
           ArrayRef<int64_t>{rowPair * 2, colPair * 2}, ArrayRef<int64_t>{2, 2},
           ArrayRef<int64_t>{1, 1});
       Value flat = vector::ShapeCastOp::create(rewriter, loc, v4i32Ty, tile);
-      tiles.push_back(fixedWidth
-                          ? flat
-                          : insertFixedInScalable(loc, flat, nxv4i32Ty,
-                                                  rewriter));
+      tiles.push_back(
+          fixedWidth ? flat
+                     : insertFixedInScalable(loc, flat, nxv4i32Ty, rewriter));
     }
   }
   return tiles;
 }
 
 static Value joinPackedW8Accumulator(Location loc, VectorType accTy,
-                                     ValueRange accumulators,
-                                     bool fixedWidth,
+                                     ValueRange accumulators, bool fixedWidth,
                                      PatternRewriter &rewriter) {
   Type i32Ty = rewriter.getI32Type();
   int64_t mSize = accTy.getDimSize(0);
@@ -1856,10 +1829,9 @@ static Value joinPackedW8Accumulator(Location loc, VectorType accTy,
   for (int64_t rowPair = 0; rowPair < mSize / 2; ++rowPair) {
     for (int64_t colPair = 0; colPair < 2; ++colPair) {
       Value native = accumulators[rowPair * 2 + colPair];
-      Value flat = fixedWidth
-                       ? native
-                       : extractFixedFromScalable(loc, native, v4i32Ty,
-                                                  rewriter);
+      Value flat =
+          fixedWidth ? native
+                     : extractFixedFromScalable(loc, native, v4i32Ty, rewriter);
       Value tile = vector::ShapeCastOp::create(rewriter, loc, tile2x2Ty, flat);
       result = vector::InsertStridedSliceOp::create(
           rewriter, loc, tile, result,
@@ -1873,8 +1845,7 @@ static Value joinPackedW8Accumulator(Location loc, VectorType accTy,
 // logical Mx4 result only once.  This also handles M12, whose Triton source
 // carries an M8 and an M4 dot as two region iter arguments.
 static LogicalResult
-convertPackedW8PrefillLoop(PackedW8PrefillCandidate &candidate,
-                           bool fixedWidth,
+convertPackedW8PrefillLoop(PackedW8PrefillCandidate &candidate, bool fixedWidth,
                            PatternRewriter &rewriter) {
   cpu::DotOp op = candidate.op;
   auto oldLoop = dyn_cast<scf::ForOp>(op->getParentOp());
@@ -1883,8 +1854,7 @@ convertPackedW8PrefillLoop(PackedW8PrefillCandidate &candidate,
       !hasOnlyReadOrNoEffects(oldLoop))
     return failure();
   auto yield = dyn_cast<scf::YieldOp>(oldLoop.getBody()->getTerminator());
-  if (!yield ||
-      yield.getNumOperands() != oldLoop.getNumRegionIterArgs())
+  if (!yield || yield.getNumOperands() != oldLoop.getNumRegionIterArgs())
     return failure();
 
   // loop_unroll_factor creates a linear chain
@@ -1998,17 +1968,16 @@ static LogicalResult convertPackedW8Prefill(PackedW8PrefillCandidate &candidate,
           rewriter, loc, op.getC(), ArrayRef<int64_t>{rowPair * 2, colPair * 2},
           ArrayRef<int64_t>{2, 2}, ArrayRef<int64_t>{1, 1});
       Value flat = vector::ShapeCastOp::create(rewriter, loc, v4i32Ty, tile);
-      accumulators.push_back(fixedWidth
-                                 ? flat
-                                 : insertFixedInScalable(loc, flat, nxv4i32Ty,
-                                                         rewriter));
+      accumulators.push_back(
+          fixedWidth ? flat
+                     : insertFixedInScalable(loc, flat, nxv4i32Ty, rewriter));
     }
   }
-  accumulators = emitPackedW8PrefillSmmla(
-      loc, candidate.lhsPanels, candidate.rhsPanel, accumulators, fixedWidth,
-      rewriter);
-  Value result = joinPackedW8Accumulator(loc, accTy, accumulators, fixedWidth,
-                                         rewriter);
+  accumulators =
+      emitPackedW8PrefillSmmla(loc, candidate.lhsPanels, candidate.rhsPanel,
+                               accumulators, fixedWidth, rewriter);
+  Value result =
+      joinPackedW8Accumulator(loc, accTy, accumulators, fixedWidth, rewriter);
   rewriter.replaceOp(op, result);
   return success();
 }
@@ -2578,8 +2547,7 @@ struct ConvertDotToSVE2I8MM
       group.push_back(standalonePackedQ4Dots[index]);
       convertedStandalone[index] = true;
       for (size_t other = index + 1;
-           other < standalonePackedQ4Dots.size() && group.size() < 2;
-           ++other) {
+           other < standalonePackedQ4Dots.size() && group.size() < 2; ++other) {
         if (convertedStandalone[other])
           continue;
         const PackedQ4M4Dot &candidate = standalonePackedQ4Dots[other];
@@ -2596,13 +2564,11 @@ struct ConvertDotToSVE2I8MM
       // shared microkernel immediately before the last dot, where all packed
       // LHS values dominate, then replace every member together.
       rewriter.setInsertionPoint(group.back().op);
-      LogicalResult result =
-          group.size() == 1
-              ? convertPackedQ4M4Dot(group.front(), rewriter)
-              : convertPackedQ4M4DotGroup(group, rewriter);
+      LogicalResult result = group.size() == 1
+                                 ? convertPackedQ4M4Dot(group.front(), rewriter)
+                                 : convertPackedQ4M4DotGroup(group, rewriter);
       if (failed(result))
-        group.front().op.emitRemark(
-            "standalone packed Q4 M4 lowering skipped");
+        group.front().op.emitRemark("standalone packed Q4 M4 lowering skipped");
     }
 
     for (auto &candidate : packedW8Prefill) {

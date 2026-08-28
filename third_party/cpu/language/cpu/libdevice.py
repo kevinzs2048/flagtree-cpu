@@ -138,9 +138,7 @@ def round(arg0, _semantic=None):
 @core.extern
 def rint(arg0, _semantic=None):
     """Round to nearest integer, resolving ties to an even integer."""
-    return core.tensor(
-        _semantic.builder.create_round_even(arg0.handle), arg0.type
-    )
+    return core.tensor(_semantic.builder.create_round_even(arg0.handle), arg0.type)
 
 
 @core.extern

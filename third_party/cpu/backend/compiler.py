@@ -27,7 +27,6 @@ def min_dot_size(target: GPUTarget):
 VecLib = cpu.passes.ttcpuir.VecLib
 Ukernels = cpu.passes.ttcpuir.Ukernels
 
-
 # LLVM and GNU/Clang use different names for a few AArch64 architecture
 # extensions. Any feature LLVM may use while emitting assembly must also be
 # enabled for the system assembler; a later ``-march`` otherwise overrides
@@ -180,27 +179,22 @@ class CPUBackend(BaseBackend):
                 and "i8mm" in self.cpu_features and self.sve_vector_bits == 128)
 
     def use_sve2_i8mm(self) -> bool:
-        return (self.supports_sve2_i8mm()
-                and not getenv_bool("TRITON_CPU_FIXED_I8MM", False)
+        return (self.supports_sve2_i8mm() and not getenv_bool("TRITON_CPU_FIXED_I8MM", False)
                 and not getenv_bool("TRITON_CPU_DISABLE_SVE2_I8MM", False))
 
     def supports_fixed_i8mm(self) -> bool:
-        return (self.cpu_arch in ("aarch64", "arm64", "armv8")
-                and "dotprod" in self.cpu_features
+        return (self.cpu_arch in ("aarch64", "arm64", "armv8") and "dotprod" in self.cpu_features
                 and "i8mm" in self.cpu_features)
 
     def use_fixed_i8mm(self) -> bool:
         return (self.supports_fixed_i8mm()
-                and (getenv_bool("TRITON_CPU_FIXED_I8MM", False)
-                     or not self.supports_sve2_i8mm())
+                and (getenv_bool("TRITON_CPU_FIXED_I8MM", False) or not self.supports_sve2_i8mm())
                 and not getenv_bool("TRITON_CPU_DISABLE_SVE2_I8MM", False))
 
     def arm_assembler_flags(self) -> list[str]:
         features = set(self.cpu_features)
         if self.use_fixed_i8mm():
-            features = {
-                feature for feature in features if not feature.startswith("sve")
-            }
+            features = {feature for feature in features if not feature.startswith("sve")}
         elif not self.supports_sve2_i8mm() and not self.supports_fixed_i8mm():
             return []
 
@@ -217,10 +211,8 @@ class CPUBackend(BaseBackend):
         fixed_width = self.use_fixed_i8mm()
         features = []
         for feature in sorted(self.cpu_features):
-            is_streaming = (
-                feature == "sme" or feature.startswith("sme-")
-                or feature == "sme2" or feature.startswith("sme2-")
-            )
+            is_streaming = (feature == "sme" or feature.startswith("sme-") or feature == "sme2"
+                            or feature.startswith("sme2-"))
             # SME requires an explicitly streaming-aware lowering and ABI.
             # Ordinary Triton CPU kernels must not inherit SME merely because
             # the JIT host advertises it.  A future SME backend should create
@@ -231,10 +223,8 @@ class CPUBackend(BaseBackend):
             # non-SVE target. Otherwise LLVM can introduce scalable vector
             # instructions while optimizing ordinary integer expressions even
             # though the custom dot lowering itself emitted only Neon.
-            disable = fixed_width and (
-                feature == "sve" or feature.startswith("sve-")
-                or feature == "sve2" or feature.startswith("sve2-")
-            )
+            disable = fixed_width and (feature == "sve" or feature.startswith("sve-") or feature == "sve2"
+                                       or feature.startswith("sve2-"))
             features.append(("-" if disable else "+") + feature)
         return ",".join(features)
 
@@ -249,11 +239,8 @@ class CPUBackend(BaseBackend):
             args["assume_in_bounds"] = getenv_bool("TRITON_CPU_ASSUME_IN_BOUNDS", False)
         if "a720_bf16_store_workaround" not in args:
             requested = getenv_bool("TRITON_CPU_A720_BF16_STORE_WORKAROUND", False)
-            args["a720_bf16_store_workaround"] = (
-                requested
-                and self.cpu_arch in ("aarch64", "arm64", "armv8")
-                and self.cpu_name.lower() == "cortex-a720"
-            )
+            args["a720_bf16_store_workaround"] = (requested and self.cpu_arch in ("aarch64", "arm64", "armv8")
+                                                  and self.cpu_name.lower() == "cortex-a720")
         return CPUOptions(**args)
 
     def pack_metadata(self, metadata):
@@ -333,16 +320,13 @@ class CPUBackend(BaseBackend):
         # LLVM reports Darwin AArch64 triples as ``arm64-apple-*``. Treat that
         # spelling exactly like ``aarch64`` here; otherwise the packed INT8
         # recognizer is silently disabled and lowers to generic vector math.
-        is_aarch64_neon = (self.cpu_arch in ("aarch64", "arm64", "armv8")
-                           and 'neon' in self.cpu_features)
-        convert_bf16_dot_product = (is_aarch64_neon and 'fp-armv8' in self.cpu_features
-                                    and 'bf16' in self.cpu_features)
+        is_aarch64_neon = (self.cpu_arch in ("aarch64", "arm64", "armv8") and 'neon' in self.cpu_features)
+        convert_bf16_dot_product = (is_aarch64_neon and 'fp-armv8' in self.cpu_features and 'bf16' in self.cpu_features)
         convert_i8_dot_product = is_aarch64_neon and 'dotprod' in self.cpu_features
         if convert_bf16_dot_product or convert_i8_dot_product:
             use_horizontal_sum = os.getenv("TRITON_CPU_DOT_PROD_HORIZ_SUM", "1") == "1"
-            cpu.passes.ttcpuir.add_convert_dot_product(
-                pm, use_horizontal_sum, convert_bf16_dot_product, convert_i8_dot_product
-            )
+            cpu.passes.ttcpuir.add_convert_dot_product(pm, use_horizontal_sum, convert_bf16_dot_product,
+                                                       convert_i8_dot_product)
         if 'amx-tile' in self.cpu_features:
             amx_int8 = 'amx-int8' in self.cpu_features
             # amx_fp16 = 'amx-fp16' in self.cpu_features
@@ -457,18 +441,16 @@ class CPUBackend(BaseBackend):
         return ret
 
     def make_asm(self, src, metadata, options):
-        return llvm.translate_to_host_asm(
-            src, options.enable_fp_fusion, options.enable_fast_math,
-            self.llvm_target_features()
-        )
+        return llvm.translate_to_host_asm(src, options.enable_fp_fusion, options.enable_fast_math,
+                                          self.llvm_target_features())
 
     def make_so(self, src, metadata, options):
         with tempfile.TemporaryDirectory() as tmpdir:
             asm_path = os.path.join(tmpdir, "kernel.s")
             if platform.system() == "Darwin" and self.cpu_arch in (
-                "aarch64",
-                "arm64",
-                "armv8",
+                    "aarch64",
+                    "arm64",
+                    "armv8",
             ):
                 src = _normalize_darwin_aarch64_assembly(src)
             Path(asm_path).write_text(src)

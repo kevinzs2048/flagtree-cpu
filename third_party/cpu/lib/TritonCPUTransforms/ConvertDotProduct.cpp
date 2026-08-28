@@ -43,8 +43,7 @@ static Value findRepeated8ByteInput(Value value) {
   auto outerShape = value.getDefiningOp<vector::ShapeCastOp>();
   if (!outerShape)
     return {};
-  auto transpose =
-      outerShape.getSource().getDefiningOp<vector::TransposeOp>();
+  auto transpose = outerShape.getSource().getDefiningOp<vector::TransposeOp>();
   if (!transpose)
     return {};
 
@@ -57,19 +56,15 @@ static Value findRepeated8ByteInput(Value value) {
   // selected as LD1R rather than LDR(D) plus a lane-duplication MOV.  W8 uses
   // the distinct 3-D graph retained in the second branch.
   if (transpose.getPermutation() == ArrayRef<int64_t>({1, 0})) {
-    auto outerSourceTy =
-        dyn_cast<VectorType>(outerShape.getSource().getType());
-    if (!outerSourceTy ||
-        outerSourceTy.getShape() != ArrayRef<int64_t>({2, 8}))
+    auto outerSourceTy = dyn_cast<VectorType>(outerShape.getSource().getType());
+    if (!outerSourceTy || outerSourceTy.getShape() != ArrayRef<int64_t>({2, 8}))
       return {};
     auto innerShape =
         transpose.getVector().getDefiningOp<vector::ShapeCastOp>();
     if (!innerShape)
       return {};
-    auto innerSourceTy =
-        dyn_cast<VectorType>(innerShape.getSource().getType());
-    if (!innerSourceTy ||
-        innerSourceTy.getShape() != ArrayRef<int64_t>({16}))
+    auto innerSourceTy = dyn_cast<VectorType>(innerShape.getSource().getType());
+    if (!innerSourceTy || innerSourceTy.getShape() != ArrayRef<int64_t>({16}))
       return {};
     auto interleave =
         innerShape.getSource().getDefiningOp<vector::InterleaveOp>();
@@ -87,8 +82,7 @@ static Value findRepeated8ByteInput(Value value) {
       cast<VectorType>(outerShape.getSource().getType()).getShape() !=
           ArrayRef<int64_t>({2, 2, 4}))
     return {};
-  auto middleShape =
-      transpose.getVector().getDefiningOp<vector::ShapeCastOp>();
+  auto middleShape = transpose.getVector().getDefiningOp<vector::ShapeCastOp>();
   if (!middleShape ||
       cast<VectorType>(middleShape.getSource().getType()).getShape() !=
           ArrayRef<int64_t>({2, 8}))
@@ -112,8 +106,7 @@ static Value findRepeated8ByteInput(Value value) {
 // shape is useful when a packed GEMV kernel carries two native v4i32
 // accumulators explicitly, avoiding multidimensional-vector ABI shuffles in
 // the K loop.
-struct ConvertI8RowDotAccumulate
-    : public OpRewritePattern<arith::AddIOp> {
+struct ConvertI8RowDotAccumulate : public OpRewritePattern<arith::AddIOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(arith::AddIOp op,
@@ -124,8 +117,7 @@ struct ConvertI8RowDotAccumulate
              op.getRhs().getDefiningOp<vector::MultiDimReductionOp>())) {
       carried = op.getLhs();
     } else if ((reduction =
-                    op.getLhs().getDefiningOp<
-                        vector::MultiDimReductionOp>())) {
+                    op.getLhs().getDefiningOp<vector::MultiDimReductionOp>())) {
       carried = op.getRhs();
     } else {
       return failure();
@@ -145,8 +137,7 @@ struct ConvertI8RowDotAccumulate
       return failure();
     }
 
-    auto multiply =
-        reduction.getSource().getDefiningOp<arith::MulIOp>();
+    auto multiply = reduction.getSource().getDefiningOp<arith::MulIOp>();
     if (!multiply || !multiply->hasOneUse())
       return failure();
     auto lhsExt = multiply.getLhs().getDefiningOp<arith::ExtSIOp>();
@@ -155,8 +146,7 @@ struct ConvertI8RowDotAccumulate
       return failure();
     auto lhsTy = dyn_cast<VectorType>(lhsExt.getIn().getType());
     auto rhsTy = dyn_cast<VectorType>(rhsExt.getIn().getType());
-    if (!lhsTy || !rhsTy ||
-        lhsTy.getShape() != ArrayRef<int64_t>({4, 4}) ||
+    if (!lhsTy || !rhsTy || lhsTy.getShape() != ArrayRef<int64_t>({4, 4}) ||
         rhsTy.getShape() != ArrayRef<int64_t>({4, 4}) ||
         !lhsTy.getElementType().isInteger(8) ||
         !rhsTy.getElementType().isInteger(8)) {
@@ -167,23 +157,22 @@ struct ConvertI8RowDotAccumulate
     auto v16i8Ty = VectorType::get({16}, rewriter.getI8Type());
     auto makeOperand = [&](Value input) -> Value {
       if (Value repeated = findRepeated8ByteInput(input)) {
-        Value scalar = LLVM::BitcastOp::create(
-            rewriter, loc, rewriter.getI64Type(), repeated);
+        Value scalar = LLVM::BitcastOp::create(rewriter, loc,
+                                               rewriter.getI64Type(), repeated);
         auto v2i64Ty = VectorType::get({2}, rewriter.getI64Type());
-        Value broadcast = vector::BroadcastOp::create(rewriter, loc,
-                                                       v2i64Ty, scalar);
+        Value broadcast =
+            vector::BroadcastOp::create(rewriter, loc, v2i64Ty, scalar);
         return LLVM::BitcastOp::create(rewriter, loc, v16i8Ty, broadcast);
       }
       return vector::ShapeCastOp::create(rewriter, loc, v16i8Ty, input);
     };
     Value lhs = makeOperand(lhsExt.getIn());
     Value rhs = makeOperand(rhsExt.getIn());
-    auto sdot = StringAttr::get(op.getContext(),
-                                "llvm.aarch64.neon.sdot.v4i32.v16i8");
-    Value result =
-        LLVM::CallIntrinsicOp::create(rewriter, loc, resultTy, sdot,
-                                      ValueRange{carried, lhs, rhs})
-            .getResult(0);
+    auto sdot =
+        StringAttr::get(op.getContext(), "llvm.aarch64.neon.sdot.v4i32.v16i8");
+    Value result = LLVM::CallIntrinsicOp::create(rewriter, loc, resultTy, sdot,
+                                                 ValueRange{carried, lhs, rhs})
+                       .getResult(0);
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -193,14 +182,12 @@ struct ConvertI8RowDotAccumulate
 // arith.addi to anchor ConvertI8RowDotAccumulate.  Lower that seed reduction to
 // SDOT as well.  Reductions still feeding an add are deliberately left alone
 // first, so the accumulate pattern can retain the native accumulator operand.
-struct ConvertI8RowDot
-    : public OpRewritePattern<vector::MultiDimReductionOp> {
+struct ConvertI8RowDot : public OpRewritePattern<vector::MultiDimReductionOp> {
   using OpRewritePattern::OpRewritePattern;
 
   LogicalResult matchAndRewrite(vector::MultiDimReductionOp op,
                                 PatternRewriter &rewriter) const override {
-    if (op->hasOneUse() &&
-        isa<arith::AddIOp>(*op->getUsers().begin()))
+    if (op->hasOneUse() && isa<arith::AddIOp>(*op->getUsers().begin()))
       return failure();
 
     auto resultTy = dyn_cast<VectorType>(op.getType());
@@ -211,8 +198,7 @@ struct ConvertI8RowDot
         sourceTy.getShape() != ArrayRef<int64_t>({4, 4}) ||
         !sourceTy.getElementType().isInteger(32) ||
         op.getKind() != vector::CombiningKind::ADD || op.isReducedDim(0) ||
-        !op.isReducedDim(1) || !isZeroConst(op.getAcc()) ||
-        !op->hasOneUse()) {
+        !op.isReducedDim(1) || !isZeroConst(op.getAcc()) || !op->hasOneUse()) {
       return failure();
     }
 
@@ -225,8 +211,7 @@ struct ConvertI8RowDot
       return failure();
     auto lhsTy = dyn_cast<VectorType>(lhsExt.getIn().getType());
     auto rhsTy = dyn_cast<VectorType>(rhsExt.getIn().getType());
-    if (!lhsTy || !rhsTy ||
-        lhsTy.getShape() != ArrayRef<int64_t>({4, 4}) ||
+    if (!lhsTy || !rhsTy || lhsTy.getShape() != ArrayRef<int64_t>({4, 4}) ||
         rhsTy.getShape() != ArrayRef<int64_t>({4, 4}) ||
         !lhsTy.getElementType().isInteger(8) ||
         !rhsTy.getElementType().isInteger(8)) {
@@ -237,25 +222,24 @@ struct ConvertI8RowDot
     auto v16i8Ty = VectorType::get({16}, rewriter.getI8Type());
     auto makeOperand = [&](Value input) -> Value {
       if (Value repeated = findRepeated8ByteInput(input)) {
-        Value scalar = LLVM::BitcastOp::create(
-            rewriter, loc, rewriter.getI64Type(), repeated);
+        Value scalar = LLVM::BitcastOp::create(rewriter, loc,
+                                               rewriter.getI64Type(), repeated);
         auto v2i64Ty = VectorType::get({2}, rewriter.getI64Type());
-        Value broadcast = vector::BroadcastOp::create(rewriter, loc,
-                                                       v2i64Ty, scalar);
+        Value broadcast =
+            vector::BroadcastOp::create(rewriter, loc, v2i64Ty, scalar);
         return LLVM::BitcastOp::create(rewriter, loc, v16i8Ty, broadcast);
       }
       return vector::ShapeCastOp::create(rewriter, loc, v16i8Ty, input);
     };
     Value lhs = makeOperand(lhsExt.getIn());
     Value rhs = makeOperand(rhsExt.getIn());
-    Value zero = arith::ConstantOp::create(
-        rewriter, loc, resultTy, rewriter.getZeroAttr(resultTy));
-    auto sdot = StringAttr::get(op.getContext(),
-                                "llvm.aarch64.neon.sdot.v4i32.v16i8");
-    Value result =
-        LLVM::CallIntrinsicOp::create(rewriter, loc, resultTy, sdot,
-                                      ValueRange{zero, lhs, rhs})
-            .getResult(0);
+    Value zero = arith::ConstantOp::create(rewriter, loc, resultTy,
+                                           rewriter.getZeroAttr(resultTy));
+    auto sdot =
+        StringAttr::get(op.getContext(), "llvm.aarch64.neon.sdot.v4i32.v16i8");
+    Value result = LLVM::CallIntrinsicOp::create(rewriter, loc, resultTy, sdot,
+                                                 ValueRange{zero, lhs, rhs})
+                       .getResult(0);
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -286,19 +270,18 @@ struct ConvertI32PairReduction
     Location loc = op.getLoc();
     auto v8i32Ty = VectorType::get({8}, rewriter.getI32Type());
     auto v4i32Ty = VectorType::get({4}, rewriter.getI32Type());
-    Value flat = vector::ShapeCastOp::create(rewriter, loc, v8i32Ty,
-                                             op.getSource());
+    Value flat =
+        vector::ShapeCastOp::create(rewriter, loc, v8i32Ty, op.getSource());
     Value low = vector::ExtractStridedSliceOp::create(
         rewriter, loc, flat, ArrayRef<int64_t>{0}, ArrayRef<int64_t>{4},
         ArrayRef<int64_t>{1});
     Value high = vector::ExtractStridedSliceOp::create(
         rewriter, loc, flat, ArrayRef<int64_t>{4}, ArrayRef<int64_t>{4},
         ArrayRef<int64_t>{1});
-    auto addp = StringAttr::get(op.getContext(),
-                                "llvm.aarch64.neon.addp.v4i32");
-    Value result = LLVM::CallIntrinsicOp::create(
-                       rewriter, loc, v4i32Ty, addp,
-                       ValueRange{low, high})
+    auto addp =
+        StringAttr::get(op.getContext(), "llvm.aarch64.neon.addp.v4i32");
+    Value result = LLVM::CallIntrinsicOp::create(rewriter, loc, v4i32Ty, addp,
+                                                 ValueRange{low, high})
                        .getResult(0);
     if (!isZeroConst(op.getAcc()))
       result = arith::AddIOp::create(rewriter, loc, result, op.getAcc());
@@ -320,10 +303,8 @@ struct ConvertI32ToF32Scale16 : public OpRewritePattern<arith::MulFOp> {
     if ((conversion = op.getLhs().getDefiningOp<arith::SIToFPOp>()) &&
         (constant = op.getRhs().getDefiningOp<arith::ConstantOp>())) {
       // Matched in source order.
-    } else if ((conversion =
-                    op.getRhs().getDefiningOp<arith::SIToFPOp>()) &&
-               (constant =
-                    op.getLhs().getDefiningOp<arith::ConstantOp>())) {
+    } else if ((conversion = op.getRhs().getDefiningOp<arith::SIToFPOp>()) &&
+               (constant = op.getLhs().getDefiningOp<arith::ConstantOp>())) {
       // Matched the commuted multiply.
     } else {
       return failure();
@@ -336,17 +317,15 @@ struct ConvertI32ToF32Scale16 : public OpRewritePattern<arith::MulFOp> {
         resultTy.getShape() != ArrayRef<int64_t>({4}) ||
         !resultTy.getElementType().isF32() ||
         inputTy.getShape() != ArrayRef<int64_t>({4}) ||
-        !inputTy.getElementType().isInteger(32) || !scale ||
-        !scale.isSplat() || scale.getSplatValue<APFloat>().convertToDouble() !=
-                                0.0625) {
+        !inputTy.getElementType().isInteger(32) || !scale || !scale.isSplat() ||
+        scale.getSplatValue<APFloat>().convertToDouble() != 0.0625) {
       return failure();
     }
 
     Location loc = op.getLoc();
-    Value fractionalBits = arith::ConstantIntOp::create(
-        rewriter, loc, 4, 32);
-    auto scvtf = StringAttr::get(op.getContext(),
-                                 "llvm.aarch64.neon.vcvtfxs2fp");
+    Value fractionalBits = arith::ConstantIntOp::create(rewriter, loc, 4, 32);
+    auto scvtf =
+        StringAttr::get(op.getContext(), "llvm.aarch64.neon.vcvtfxs2fp");
     Value result = LLVM::CallIntrinsicOp::create(
                        rewriter, loc, resultTy, scvtf,
                        ValueRange{conversion.getIn(), fractionalBits})
@@ -386,8 +365,7 @@ struct ConvertPackedI8MulSumAccumulate
              op.getRhs().getDefiningOp<vector::MultiDimReductionOp>())) {
       carried = op.getLhs();
     } else if ((reduction =
-                    op.getLhs().getDefiningOp<
-                        vector::MultiDimReductionOp>())) {
+                    op.getLhs().getDefiningOp<vector::MultiDimReductionOp>())) {
       carried = op.getRhs();
     } else {
       return failure();
@@ -396,8 +374,8 @@ struct ConvertPackedI8MulSumAccumulate
     auto resultTy = dyn_cast<VectorType>(op.getType());
     auto sourceTy = dyn_cast<VectorType>(reduction.getSource().getType());
     auto reductionTy = dyn_cast<VectorType>(reduction.getType());
-    if (!resultTy || !sourceTy || !reductionTy ||
-        resultTy != reductionTy || resultTy.getShape() != ArrayRef<int64_t>({4, 2}) ||
+    if (!resultTy || !sourceTy || !reductionTy || resultTy != reductionTy ||
+        resultTy.getShape() != ArrayRef<int64_t>({4, 2}) ||
         !resultTy.getElementType().isInteger(32) ||
         sourceTy.getShape() != ArrayRef<int64_t>({4, 2, 4}) ||
         !sourceTy.getElementType().isInteger(32) ||
@@ -408,8 +386,7 @@ struct ConvertPackedI8MulSumAccumulate
       return failure();
     }
 
-    auto multiply =
-        reduction.getSource().getDefiningOp<arith::MulIOp>();
+    auto multiply = reduction.getSource().getDefiningOp<arith::MulIOp>();
     if (!multiply || !multiply->hasOneUse())
       return failure();
 
@@ -428,8 +405,7 @@ struct ConvertPackedI8MulSumAccumulate
         return false;
 
       auto weightTy = dyn_cast<VectorType>(weightExt.getIn().getType());
-      auto activationTy =
-          dyn_cast<VectorType>(activationExt.getIn().getType());
+      auto activationTy = dyn_cast<VectorType>(activationExt.getIn().getType());
       auto broadcastSourceTy =
           dyn_cast<VectorType>(activationBroadcast.getSource().getType());
       if (!weightTy || !activationTy || !broadcastSourceTy ||
@@ -461,17 +437,17 @@ struct ConvertPackedI8MulSumAccumulate
     auto v4i32Ty = VectorType::get({4}, i32Ty);
     auto v8i32Ty = VectorType::get({8}, i32Ty);
 
-    Value weights = vector::ShapeCastOp::create(rewriter, loc, v32i8Ty,
-                                                weightInput);
+    Value weights =
+        vector::ShapeCastOp::create(rewriter, loc, v32i8Ty, weightInput);
     Value weights01 = vector::ExtractStridedSliceOp::create(
-        rewriter, loc, weights, ArrayRef<int64_t>{0},
-        ArrayRef<int64_t>{16}, ArrayRef<int64_t>{1});
+        rewriter, loc, weights, ArrayRef<int64_t>{0}, ArrayRef<int64_t>{16},
+        ArrayRef<int64_t>{1});
     Value weights23 = vector::ExtractStridedSliceOp::create(
-        rewriter, loc, weights, ArrayRef<int64_t>{16},
-        ArrayRef<int64_t>{16}, ArrayRef<int64_t>{1});
+        rewriter, loc, weights, ArrayRef<int64_t>{16}, ArrayRef<int64_t>{16},
+        ArrayRef<int64_t>{1});
 
-    Value activation = vector::ShapeCastOp::create(
-        rewriter, loc, v8i8Ty, activationInput);
+    Value activation =
+        vector::ShapeCastOp::create(rewriter, loc, v8i8Ty, activationInput);
     constexpr int64_t repeatActivation[] = {0, 1, 2, 3, 4, 5, 6, 7,
                                             0, 1, 2, 3, 4, 5, 6, 7};
     Value activationRepeated = vector::ShuffleOp::create(
@@ -480,29 +456,26 @@ struct ConvertPackedI8MulSumAccumulate
     Value carriedFlat =
         vector::ShapeCastOp::create(rewriter, loc, v8i32Ty, carried);
     Value carried01 = vector::ExtractStridedSliceOp::create(
-        rewriter, loc, carriedFlat, ArrayRef<int64_t>{0},
-        ArrayRef<int64_t>{4}, ArrayRef<int64_t>{1});
+        rewriter, loc, carriedFlat, ArrayRef<int64_t>{0}, ArrayRef<int64_t>{4},
+        ArrayRef<int64_t>{1});
     Value carried23 = vector::ExtractStridedSliceOp::create(
-        rewriter, loc, carriedFlat, ArrayRef<int64_t>{4},
-        ArrayRef<int64_t>{4}, ArrayRef<int64_t>{1});
+        rewriter, loc, carriedFlat, ArrayRef<int64_t>{4}, ArrayRef<int64_t>{4},
+        ArrayRef<int64_t>{1});
 
-    auto sdot =
-        StringAttr::get(ctx, "llvm.aarch64.neon.sdot.v4i32.v16i8");
+    auto sdot = StringAttr::get(ctx, "llvm.aarch64.neon.sdot.v4i32.v16i8");
     Value result01 = LLVM::CallIntrinsicOp::create(
                          rewriter, loc, v4i32Ty, sdot,
-                         ValueRange{carried01, weights01,
-                                    activationRepeated})
+                         ValueRange{carried01, weights01, activationRepeated})
                          .getResult(0);
     Value result23 = LLVM::CallIntrinsicOp::create(
                          rewriter, loc, v4i32Ty, sdot,
-                         ValueRange{carried23, weights23,
-                                    activationRepeated})
+                         ValueRange{carried23, weights23, activationRepeated})
                          .getResult(0);
     constexpr int64_t concatenate[] = {0, 1, 2, 3, 4, 5, 6, 7};
-    Value resultFlat = vector::ShuffleOp::create(
-        rewriter, loc, result01, result23, concatenate);
-    Value result = vector::ShapeCastOp::create(rewriter, loc, resultTy,
-                                               resultFlat);
+    Value resultFlat = vector::ShuffleOp::create(rewriter, loc, result01,
+                                                 result23, concatenate);
+    Value result =
+        vector::ShapeCastOp::create(rewriter, loc, resultTy, resultFlat);
     rewriter.replaceOp(op, result);
     return success();
   }
@@ -986,8 +959,7 @@ createConvertDotProduct(bool useHorizontalSum, bool enableBf16) {
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertDotProduct(bool useHorizontalSum, bool enableBf16,
-                        bool enableI8) {
+createConvertDotProduct(bool useHorizontalSum, bool enableBf16, bool enableI8) {
   return std::make_unique<ConvertDotProduct>(useHorizontalSum, enableBf16,
                                              enableI8);
 }

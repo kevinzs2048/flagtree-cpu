@@ -195,8 +195,7 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
       if (canComputeScalarValue(ptrTensor)) {
         SmallVector<int64_t> origin{0, 0};
         SmallVector<int64_t> nextRow{1, 0};
-        Value firstPtr =
-            extractScalarPointer(loc, ptrTensor, origin, rewriter);
+        Value firstPtr = extractScalarPointer(loc, ptrTensor, origin, rewriter);
         Value nextRowPtr =
             extractScalarPointer(loc, ptrTensor, nextRow, rewriter);
         Value firstAddr = triton::PtrToIntOp::create(
@@ -212,17 +211,17 @@ struct LoadOpConversion : public MemoryOpConversion<triton::LoadOp> {
         auto baseMemRefTy = MemRefType::get({1}, vecTy.getElementType());
         Value baseMemRef = triton::cpu::PtrToMemRefOp::create(
             rewriter, loc, baseMemRefTy, firstPtr);
-        auto layout = StridedLayoutAttr::get(
-            getContext(), 0, {ShapedType::kDynamic, 1});
+        auto layout =
+            StridedLayoutAttr::get(getContext(), 0, {ShapedType::kDynamic, 1});
         auto tileMemRefTy =
             MemRefType::get(shape, vecTy.getElementType(), layout);
-        SmallVector<OpFoldResult> sizes{
-            rewriter.getIndexAttr(shape[0]), rewriter.getIndexAttr(shape[1])};
+        SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(shape[0]),
+                                        rewriter.getIndexAttr(shape[1])};
         SmallVector<OpFoldResult> tileStrides{majorStride,
-                                             rewriter.getIndexAttr(1)};
+                                              rewriter.getIndexAttr(1)};
         Value tileMemRef = memref::ReinterpretCastOp::create(
-            rewriter, loc, tileMemRefTy, baseMemRef,
-            rewriter.getIndexAttr(0), sizes, tileStrides);
+            rewriter, loc, tileMemRefTy, baseMemRef, rewriter.getIndexAttr(0),
+            sizes, tileStrides);
 
         Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
         SmallVector<Value> indices(2, zeroIdx);
@@ -412,8 +411,7 @@ struct StoreOpConversion : public MemoryOpConversion<triton::StoreOp> {
       if (canComputeScalarValue(ptrTensor)) {
         SmallVector<int64_t> origin{0, 0};
         SmallVector<int64_t> nextRow{1, 0};
-        Value firstPtr =
-            extractScalarPointer(loc, ptrTensor, origin, rewriter);
+        Value firstPtr = extractScalarPointer(loc, ptrTensor, origin, rewriter);
         Value nextRowPtr =
             extractScalarPointer(loc, ptrTensor, nextRow, rewriter);
         Value firstAddr = triton::PtrToIntOp::create(
@@ -425,25 +423,25 @@ struct StoreOpConversion : public MemoryOpConversion<triton::StoreOp> {
         // Pointer differences are in bytes; memref strides are in elements.
         Value elementBytes = arith::ConstantIntOp::create(
             rewriter, loc, rewriter.getI64Type(), 4);
-        majorStride = arith::DivSIOp::create(
-            rewriter, loc, majorStride, elementBytes);
+        majorStride =
+            arith::DivSIOp::create(rewriter, loc, majorStride, elementBytes);
         majorStride = arith::IndexCastOp::create(
             rewriter, loc, rewriter.getIndexType(), majorStride);
 
         auto baseMemRefTy = MemRefType::get({1}, vecTy.getElementType());
         Value baseMemRef = triton::cpu::PtrToMemRefOp::create(
             rewriter, loc, baseMemRefTy, firstPtr);
-        auto layout = StridedLayoutAttr::get(
-            getContext(), 0, {ShapedType::kDynamic, 1});
+        auto layout =
+            StridedLayoutAttr::get(getContext(), 0, {ShapedType::kDynamic, 1});
         auto tileMemRefTy =
             MemRefType::get(shape, vecTy.getElementType(), layout);
-        SmallVector<OpFoldResult> sizes{
-            rewriter.getIndexAttr(shape[0]), rewriter.getIndexAttr(shape[1])};
+        SmallVector<OpFoldResult> sizes{rewriter.getIndexAttr(shape[0]),
+                                        rewriter.getIndexAttr(shape[1])};
         SmallVector<OpFoldResult> tileStrides{majorStride,
-                                             rewriter.getIndexAttr(1)};
+                                              rewriter.getIndexAttr(1)};
         Value tileMemRef = memref::ReinterpretCastOp::create(
-            rewriter, loc, tileMemRefTy, baseMemRef,
-            rewriter.getIndexAttr(0), sizes, tileStrides);
+            rewriter, loc, tileMemRefTy, baseMemRef, rewriter.getIndexAttr(0),
+            sizes, tileStrides);
 
         Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
         SmallVector<Value> indices(2, zeroIdx);

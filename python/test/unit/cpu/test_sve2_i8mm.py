@@ -32,21 +32,18 @@ def uses_fixed_i8mm() -> bool:
 
 
 requires_sve2_i8mm = pytest.mark.skipif(
-    not has_sve2_i8mm_128()
-    or os.environ.get("TRITON_CPU_FIXED_I8MM", "0") == "1"
+    not has_sve2_i8mm_128() or os.environ.get("TRITON_CPU_FIXED_I8MM", "0") == "1"
     or os.environ.get("TRITON_CPU_DISABLE_SVE2_I8MM", "0") == "1",
     reason="requires the 128-bit Arm SVE2/i8mm lowering",
 )
 
 requires_arm_i8mm = pytest.mark.skipif(
-    not has_arm_i8mm()
-    or os.environ.get("TRITON_CPU_DISABLE_SVE2_I8MM", "0") == "1",
+    not has_arm_i8mm() or os.environ.get("TRITON_CPU_DISABLE_SVE2_I8MM", "0") == "1",
     reason="requires the Arm DotProd/i8mm lowering",
 )
 
 requires_cortex_a720 = pytest.mark.skipif(
-    platform.machine() not in ("aarch64", "arm64")
-    or llvm.get_cpu_name().lower() != "cortex-a720",
+    platform.machine() not in ("aarch64", "arm64") or llvm.get_cpu_name().lower() != "cortex-a720",
     reason="requires Cortex-A720 store-pair code generation",
 )
 
@@ -67,7 +64,7 @@ def test_a720_independent_bf16_loop_store_avoids_pairing(monkeypatch):
     input = torch.randn(1024, dtype=torch.bfloat16)
     weight = torch.randn(1024, dtype=torch.bfloat16)
     output = torch.empty_like(input)
-    compiled = kernel[(1,)](input, weight, output, N=1024)
+    compiled = kernel[(1, )](input, weight, output, N=1024)
 
     expected = (input.float() * weight.float()).to(torch.bfloat16)
     assert torch.equal(output, expected)
@@ -95,7 +92,7 @@ def test_i8_dot_uses_smmla():
     a = torch.randint(-128, 128, (32, 128), dtype=torch.int8, device="cpu")
     b = torch.randint(-128, 128, (128, 32), dtype=torch.int8, device="cpu")
     actual = torch.empty((32, 32), dtype=torch.int32, device="cpu")
-    compiled = kernel[(1,)](a, b, actual)
+    compiled = kernel[(1, )](a, b, actual)
 
     expected = a.to(torch.int32) @ b.to(torch.int32)
     assert torch.equal(actual, expected)
@@ -127,7 +124,7 @@ def test_w4a8_m1_dot_fuses_nibble_unpack_to_sdot():
         x_high = tl.load(x_ptr + 16 + k).reshape((1, 4))
         result = tl.dot(x_low, weight_low, out_dtype=tl.int32)
         result += tl.dot(x_high, weight_high, out_dtype=tl.int32)
-        tl.store(out_ptr + tl.arange(0, 4), result.reshape((4,)))
+        tl.store(out_ptr + tl.arange(0, 4), result.reshape((4, )))
 
     x = torch.tensor(
         [17, -5, 11, 3] + [0] * 12 + [-7, 13, 2, -9] + [0] * 12,
@@ -144,13 +141,12 @@ def test_w4a8_m1_dot_fuses_nibble_unpack_to_sdot():
         dtype=torch.int8,
         device="cpu",
     )
-    packed = ((weight_low.to(torch.int16) + 8)
-              | ((weight_high.to(torch.int16) + 8) << 4)).to(torch.uint8).reshape(-1)
+    packed = ((weight_low.to(torch.int16) + 8) | ((weight_high.to(torch.int16) + 8) << 4)).to(torch.uint8).reshape(-1)
     actual = torch.empty(4, dtype=torch.int32, device="cpu")
-    compiled = kernel[(1,)](x, packed, actual)
+    compiled = kernel[(1, )](x, packed, actual)
 
-    expected = (x[:4].to(torch.int32) @ weight_low.to(torch.int32).T
-                + x[16:20].to(torch.int32) @ weight_high.to(torch.int32).T)
+    expected = (x[:4].to(torch.int32) @ weight_low.to(torch.int32).T +
+                x[16:20].to(torch.int32) @ weight_high.to(torch.int32).T)
     assert torch.equal(actual, expected)
     assembly = compiled.asm["asm"].lower()
     assert assembly.count("sdot") == 2
@@ -166,26 +162,18 @@ def test_packed_w8a8_honors_loop_unroll_and_uses_sdot():
     def kernel(x_ptr, packed_ptr, out_ptr):
         dot = tl.zeros((1, 4), dtype=tl.int32)
         for group in tl.range(0, 64, loop_unroll_factor=2):
-            packed_flat = tl.load(
-                packed_ptr + group * 16 + tl.arange(0, 16)
-            )
+            packed_flat = tl.load(packed_ptr + group * 16 + tl.arange(0, 16))
             weight = tl.trans(packed_flat.reshape((4, 4)))
-            x = tl.load(
-                x_ptr + group * 4 + tl.arange(0, 4)
-            ).reshape((1, 4))
+            x = tl.load(x_ptr + group * 4 + tl.arange(0, 4)).reshape((1, 4))
             dot += tl.dot(x, weight, out_dtype=tl.int32)
-        tl.store(out_ptr + tl.arange(0, 4), dot.reshape((4,)))
+        tl.store(out_ptr + tl.arange(0, 4), dot.reshape((4, )))
 
     torch.manual_seed(801)
-    x = torch.randint(-127, 128, (256,), dtype=torch.int8, device="cpu")
-    weight = torch.randint(
-        -127, 128, (256, 4), dtype=torch.int8, device="cpu"
-    )
-    packed = (
-        weight.reshape(64, 4, 4).permute(0, 2, 1).contiguous()
-    )
+    x = torch.randint(-127, 128, (256, ), dtype=torch.int8, device="cpu")
+    weight = torch.randint(-127, 128, (256, 4), dtype=torch.int8, device="cpu")
+    packed = (weight.reshape(64, 4, 4).permute(0, 2, 1).contiguous())
     actual = torch.empty(4, dtype=torch.int32, device="cpu")
-    compiled = kernel[(1,)](x, packed, actual)
+    compiled = kernel[(1, )](x, packed, actual)
 
     expected = x.to(torch.int32) @ weight.to(torch.int32)
     assert torch.equal(actual, expected)
@@ -202,26 +190,18 @@ def test_kai_w8_physical_layout_mul_sum_fuses_sdot_and_addp():
 
     @triton.jit
     def kernel(x_ptr, packed_ptr, out_ptr):
-        partial01 = tl.zeros((4,), dtype=tl.int32)
-        partial23 = tl.zeros((4,), dtype=tl.int32)
+        partial01 = tl.zeros((4, ), dtype=tl.int32)
+        partial23 = tl.zeros((4, ), dtype=tl.int32)
         q_offsets = tl.arange(0, 16)
         x_offsets = tl.arange(0, 8)
         for group in tl.range(0, 64, loop_unroll_factor=1):
             base = group * 32
-            weight01 = tl.load(
-                packed_ptr + base + q_offsets
-            ).reshape((4, 4))
-            weight23 = tl.load(
-                packed_ptr + base + 16 + q_offsets
-            ).reshape((4, 4))
+            weight01 = tl.load(packed_ptr + base + q_offsets).reshape((4, 4))
+            weight23 = tl.load(packed_ptr + base + 16 + q_offsets).reshape((4, 4))
             x = tl.load(x_ptr + group * 8 + x_offsets).reshape((2, 4))
             x_repeated = tl.cat(x, x, dim=0)
-            partial01 += tl.sum(
-                weight01.to(tl.int32) * x_repeated.to(tl.int32), axis=1
-            )
-            partial23 += tl.sum(
-                weight23.to(tl.int32) * x_repeated.to(tl.int32), axis=1
-            )
+            partial01 += tl.sum(weight01.to(tl.int32) * x_repeated.to(tl.int32), axis=1)
+            partial23 += tl.sum(weight23.to(tl.int32) * x_repeated.to(tl.int32), axis=1)
         partial = tl.cat(
             partial01.reshape((2, 2)),
             partial23.reshape((2, 2)),
@@ -231,15 +211,11 @@ def test_kai_w8_physical_layout_mul_sum_fuses_sdot_and_addp():
         tl.store(out_ptr + tl.arange(0, 4), result)
 
     torch.manual_seed(8128)
-    x = torch.randint(-127, 128, (512,), dtype=torch.int8, device="cpu")
-    weight = torch.randint(
-        -127, 128, (4, 512), dtype=torch.int8, device="cpu"
-    )
-    packed = (
-        weight.reshape(4, 64, 8).permute(1, 0, 2).contiguous().reshape(-1)
-    )
+    x = torch.randint(-127, 128, (512, ), dtype=torch.int8, device="cpu")
+    weight = torch.randint(-127, 128, (4, 512), dtype=torch.int8, device="cpu")
+    packed = (weight.reshape(4, 64, 8).permute(1, 0, 2).contiguous().reshape(-1))
     actual = torch.empty(4, dtype=torch.int32, device="cpu")
-    compiled = kernel[(1,)](x, packed, actual)
+    compiled = kernel[(1, )](x, packed, actual)
 
     expected = x.to(torch.int32) @ weight.to(torch.int32).T
     assert torch.equal(actual, expected)
@@ -290,24 +266,21 @@ def test_kai_w4_physical_layout_fuses_sdot_addp_and_fixed_scvtf():
         partial23 += tl.sum(q1_high.to(tl.int32) * x2.to(tl.int32), axis=1)
         partial01 += tl.sum(q2_high.to(tl.int32) * x3.to(tl.int32), axis=1)
         partial23 += tl.sum(q3_high.to(tl.int32) * x3.to(tl.int32), axis=1)
-        partial = tl.cat(
-            partial01.reshape((2, 2)), partial23.reshape((2, 2)), dim=0
-        )
+        partial = tl.cat(partial01.reshape((2, 2)), partial23.reshape((2, 2)), dim=0)
         result = tl.sum(partial, axis=1).to(tl.float32) * (1.0 / 16.0)
         tl.store(out_ptr + tl.arange(0, 4), result)
 
     torch.manual_seed(4328)
-    x = torch.randint(-127, 128, (32,), dtype=torch.int8, device="cpu")
+    x = torch.randint(-127, 128, (32, ), dtype=torch.int8, device="cpu")
     weight = torch.randint(-8, 8, (4, 32), dtype=torch.int8, device="cpu")
     vectors = []
-    for k_begin, outputs in ((0, (0, 1)), (0, (2, 3)),
-                             (8, (0, 1)), (8, (2, 3))):
+    for k_begin, outputs in ((0, (0, 1)), (0, (2, 3)), (8, (0, 1)), (8, (2, 3))):
         low = weight[list(outputs), k_begin:k_begin + 8].to(torch.int16) & 15
         high = weight[list(outputs), k_begin + 16:k_begin + 24].to(torch.int16) & 15
         vectors.append((low | (high << 4)).to(torch.uint8).reshape(-1))
     packed = torch.cat(vectors)
     actual = torch.empty(4, dtype=torch.float32, device="cpu")
-    compiled = kernel[(1,)](x.view(torch.uint8), packed, actual)
+    compiled = kernel[(1, )](x.view(torch.uint8), packed, actual)
 
     expected = x.to(torch.int32) @ weight.to(torch.int32).T
     assert torch.equal(actual, expected.to(torch.float32))
@@ -348,95 +321,50 @@ def test_kai_q4_prefill_m16_fuses_ordinary_tl_dot_to_smmla(groups):
 
         for group in range(0, groups):
             rhs_base = (pid_n * groups + group) * 72
-            packed = tl.load(
-                rhs_data_ptr + rhs_base + 8 + tl.arange(0, 64)
-            ).reshape((2, 4, 8)).permute(0, 2, 1).reshape((16, 4))
+            packed = tl.load(rhs_data_ptr + rhs_base + 8 + tl.arange(0, 64)).reshape(
+                (2, 4, 8)).permute(0, 2, 1).reshape((16, 4))
             weight_low = (packed << 4).to(tl.int8)
             weight_high = (packed & HIGH_MASK).to(tl.int8)
-            weight = tl.join(weight_low, weight_high).permute(
-                0, 2, 1
-            ).reshape((32, 4))
-            rhs_scale = tl.load(
-                rhs_scale_ptr + rhs_base // 2 + tl.arange(0, 4)
-            ).to(tl.float32)
+            weight = tl.join(weight_low, weight_high).permute(0, 2, 1).reshape((32, 4))
+            rhs_scale = tl.load(rhs_scale_ptr + rhs_base // 2 + tl.arange(0, 4)).to(tl.float32)
 
             lhs_base = group * 136
             panel_stride: tl.constexpr = groups * 136
-            lhs0_seq = tl.load(
-                lhs_data_ptr + lhs_base + 8 + tl.arange(0, 128)
-            ).reshape((4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
-            lhs0 = lhs0_seq.reshape((4, 2, 16)).permute(
-                0, 2, 1
-            ).reshape((4, 32))
-            scale0 = tl.load(
-                lhs_scale_ptr + lhs_base // 2 + rows
-            ).to(tl.float32)
-            result0 += (
-                tl.dot(lhs0, weight, out_dtype=tl.int32).to(tl.float32)
-                * (1.0 / 16.0)
-                * scale0[:, None]
-                * rhs_scale[None, :]
-            )
+            lhs0_seq = tl.load(lhs_data_ptr + lhs_base + 8 + tl.arange(0, 128)).reshape(
+                (4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
+            lhs0 = lhs0_seq.reshape((4, 2, 16)).permute(0, 2, 1).reshape((4, 32))
+            scale0 = tl.load(lhs_scale_ptr + lhs_base // 2 + rows).to(tl.float32)
+            result0 += (tl.dot(lhs0, weight, out_dtype=tl.int32).to(tl.float32) * (1.0 / 16.0) * scale0[:, None] *
+                        rhs_scale[None, :])
 
             lhs1_base = lhs_base + panel_stride
-            lhs1_seq = tl.load(
-                lhs_data_ptr + lhs1_base + 8 + tl.arange(0, 128)
-            ).reshape((4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
-            lhs1 = lhs1_seq.reshape((4, 2, 16)).permute(
-                0, 2, 1
-            ).reshape((4, 32))
-            scale1 = tl.load(
-                lhs_scale_ptr + lhs1_base // 2 + rows
-            ).to(tl.float32)
-            result1 += (
-                tl.dot(lhs1, weight, out_dtype=tl.int32).to(tl.float32)
-                * (1.0 / 16.0)
-                * scale1[:, None]
-                * rhs_scale[None, :]
-            )
+            lhs1_seq = tl.load(lhs_data_ptr + lhs1_base + 8 + tl.arange(0, 128)).reshape(
+                (4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
+            lhs1 = lhs1_seq.reshape((4, 2, 16)).permute(0, 2, 1).reshape((4, 32))
+            scale1 = tl.load(lhs_scale_ptr + lhs1_base // 2 + rows).to(tl.float32)
+            result1 += (tl.dot(lhs1, weight, out_dtype=tl.int32).to(tl.float32) * (1.0 / 16.0) * scale1[:, None] *
+                        rhs_scale[None, :])
 
             lhs2_base = lhs_base + 2 * panel_stride
-            lhs2_seq = tl.load(
-                lhs_data_ptr + lhs2_base + 8 + tl.arange(0, 128)
-            ).reshape((4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
-            lhs2 = lhs2_seq.reshape((4, 2, 16)).permute(
-                0, 2, 1
-            ).reshape((4, 32))
-            scale2 = tl.load(
-                lhs_scale_ptr + lhs2_base // 2 + rows
-            ).to(tl.float32)
-            result2 += (
-                tl.dot(lhs2, weight, out_dtype=tl.int32).to(tl.float32)
-                * (1.0 / 16.0)
-                * scale2[:, None]
-                * rhs_scale[None, :]
-            )
+            lhs2_seq = tl.load(lhs_data_ptr + lhs2_base + 8 + tl.arange(0, 128)).reshape(
+                (4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
+            lhs2 = lhs2_seq.reshape((4, 2, 16)).permute(0, 2, 1).reshape((4, 32))
+            scale2 = tl.load(lhs_scale_ptr + lhs2_base // 2 + rows).to(tl.float32)
+            result2 += (tl.dot(lhs2, weight, out_dtype=tl.int32).to(tl.float32) * (1.0 / 16.0) * scale2[:, None] *
+                        rhs_scale[None, :])
 
             lhs3_base = lhs_base + 3 * panel_stride
-            lhs3_seq = tl.load(
-                lhs_data_ptr + lhs3_base + 8 + tl.arange(0, 128)
-            ).reshape((4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
-            lhs3 = lhs3_seq.reshape((4, 2, 16)).permute(
-                0, 2, 1
-            ).reshape((4, 32))
-            scale3 = tl.load(
-                lhs_scale_ptr + lhs3_base // 2 + rows
-            ).to(tl.float32)
-            result3 += (
-                tl.dot(lhs3, weight, out_dtype=tl.int32).to(tl.float32)
-                * (1.0 / 16.0)
-                * scale3[:, None]
-                * rhs_scale[None, :]
-            )
+            lhs3_seq = tl.load(lhs_data_ptr + lhs3_base + 8 + tl.arange(0, 128)).reshape(
+                (4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
+            lhs3 = lhs3_seq.reshape((4, 2, 16)).permute(0, 2, 1).reshape((4, 32))
+            scale3 = tl.load(lhs_scale_ptr + lhs3_base // 2 + rows).to(tl.float32)
+            result3 += (tl.dot(lhs3, weight, out_dtype=tl.int32).to(tl.float32) * (1.0 / 16.0) * scale3[:, None] *
+                        rhs_scale[None, :])
 
-        tl.store(out_ptr + rows[:, None] * N + cols[None, :],
-                 result0.to(tl.bfloat16))
-        tl.store(out_ptr + (rows + 4)[:, None] * N + cols[None, :],
-                 result1.to(tl.bfloat16))
-        tl.store(out_ptr + (rows + 8)[:, None] * N + cols[None, :],
-                 result2.to(tl.bfloat16))
-        tl.store(out_ptr + (rows + 12)[:, None] * N + cols[None, :],
-                 result3.to(tl.bfloat16))
+        tl.store(out_ptr + rows[:, None] * N + cols[None, :], result0.to(tl.bfloat16))
+        tl.store(out_ptr + (rows + 4)[:, None] * N + cols[None, :], result1.to(tl.bfloat16))
+        tl.store(out_ptr + (rows + 8)[:, None] * N + cols[None, :], result2.to(tl.bfloat16))
+        tl.store(out_ptr + (rows + 12)[:, None] * N + cols[None, :], result3.to(tl.bfloat16))
 
     torch.manual_seed(41632)
     lhs_blob = torch.zeros(4 * groups * 136, dtype=torch.uint8)
@@ -444,57 +372,35 @@ def test_kai_q4_prefill_m16_fuses_ordinary_tl_dot_to_smmla(groups):
     for panel in range(4):
         for group in range(groups):
             base = (panel * groups + group) * 136
-            lhs_blob.view(torch.float16)[base // 2:base // 2 + 4] = (
-                torch.rand(4, dtype=torch.float16) + 0.25
-            )
-            lhs_blob[base + 8:base + 136] = torch.randint(
-                0, 256, (128,), dtype=torch.uint8
-            )
+            lhs_blob.view(torch.float16)[base // 2:base // 2 + 4] = (torch.rand(4, dtype=torch.float16) + 0.25)
+            lhs_blob[base + 8:base + 136] = torch.randint(0, 256, (128, ), dtype=torch.uint8)
     for group in range(groups):
         base = group * 72
-        rhs_blob.view(torch.float16)[base // 2:base // 2 + 4] = (
-            torch.rand(4, dtype=torch.float16) + 0.25
-        )
-        rhs_blob[base + 8:base + 72] = torch.randint(
-            0, 256, (64,), dtype=torch.uint8
-        )
+        rhs_blob.view(torch.float16)[base // 2:base // 2 + 4] = (torch.rand(4, dtype=torch.float16) + 0.25)
+        rhs_blob[base + 8:base + 72] = torch.randint(0, 256, (64, ), dtype=torch.uint8)
 
     def reference(high_mask):
         expected = torch.zeros((16, 4), dtype=torch.float32)
         for group in range(groups):
             rhs_base = group * 72
-            packed = rhs_blob[rhs_base + 8:rhs_base + 72].reshape(
-                2, 4, 8
-            ).permute(0, 2, 1).reshape(16, 4)
+            packed = rhs_blob[rhs_base + 8:rhs_base + 72].reshape(2, 4, 8).permute(0, 2, 1).reshape(16, 4)
             low = (packed << 4).view(torch.int8)
             high = (packed & high_mask).view(torch.int8)
-            weight = torch.stack((low, high), dim=2).permute(
-                0, 2, 1
-            ).reshape(32, 4)
-            rhs_scale = rhs_blob.view(torch.float16)[
-                rhs_base // 2:rhs_base // 2 + 4
-            ].float()
+            weight = torch.stack((low, high), dim=2).permute(0, 2, 1).reshape(32, 4)
+            rhs_scale = rhs_blob.view(torch.float16)[rhs_base // 2:rhs_base // 2 + 4].float()
             for panel in range(4):
                 lhs_base = (panel * groups + group) * 136
-                lhs_seq = lhs_blob[lhs_base + 8:lhs_base + 136].view(
-                    torch.int8
-                ).reshape(4, 4, 8).permute(1, 0, 2).reshape(4, 32)
-                lhs = lhs_seq.reshape(4, 2, 16).permute(
-                    0, 2, 1
-                ).reshape(4, 32)
-                lhs_scale = lhs_blob.view(torch.float16)[
-                    lhs_base // 2:lhs_base // 2 + 4
-                ].float()
-                expected[panel * 4:(panel + 1) * 4] += (
-                    (lhs.to(torch.int32) @ weight.to(torch.int32)).float()
-                    * (1.0 / 16.0)
-                    * lhs_scale[:, None]
-                    * rhs_scale[None, :]
-                )
+                lhs_seq = lhs_blob[lhs_base + 8:lhs_base + 136].view(torch.int8).reshape(4, 4,
+                                                                                         8).permute(1, 0,
+                                                                                                    2).reshape(4, 32)
+                lhs = lhs_seq.reshape(4, 2, 16).permute(0, 2, 1).reshape(4, 32)
+                lhs_scale = lhs_blob.view(torch.float16)[lhs_base // 2:lhs_base // 2 + 4].float()
+                expected[panel * 4:(panel + 1) * 4] += ((lhs.to(torch.int32) @ weight.to(torch.int32)).float() *
+                                                        (1.0 / 16.0) * lhs_scale[:, None] * rhs_scale[None, :])
         return expected.to(torch.bfloat16)
 
     actual = torch.empty((16, 4), dtype=torch.bfloat16)
-    compiled = kernel[(1,)](
+    compiled = kernel[(1, )](
         lhs_blob.view(torch.int8),
         lhs_blob.view(torch.float16),
         rhs_blob,
@@ -512,30 +418,24 @@ def test_kai_q4_prefill_m16_fuses_ordinary_tl_dot_to_smmla(groups):
     # separate GPR pair can also be saved as loop state, so count vector spills
     # rather than every line carrying LLVM's generic "Folded Spill" comment.
     vector_spills = [
-        line
-        for line in assembly.splitlines()
-        if "folded spill" in line
-        and any(opcode in line for opcode in ("stp\td", "str\td", "stp\tq", "str\tq"))
+        line for line in assembly.splitlines()
+        if "folded spill" in line and any(opcode in line for opcode in ("stp\td", "str\td", "stp\tq", "str\tq"))
     ]
     vector_reloads = [
-        line
-        for line in assembly.splitlines()
-        if "folded reload" in line
-        and any(opcode in line for opcode in ("ldp\td", "ldr\td", "ldp\tq", "ldr\tq"))
+        line for line in assembly.splitlines()
+        if "folded reload" in line and any(opcode in line for opcode in ("ldp\td", "ldr\td", "ldp\tq", "ldr\tq"))
     ]
     assert len(vector_spills) <= 4
     assert len(vector_reloads) <= 4
     llir = compiled.asm["llir"].lower()
-    assert llir.count(
-        "call <4 x i32> @llvm.aarch64.neon.smmla"
-    ) == 64
+    assert llir.count("call <4 x i32> @llvm.aarch64.neon.smmla") == 64
     assert "triton_cpu.dot" not in llir
     assert "sdot_gemv" not in llir and "fused_mlp" not in llir
 
     # A graph that differs by even one packed-layout constant must remain on
     # the generic path.  This guards the matcher against a silent miscompile.
     negative = torch.empty_like(actual)
-    generic = kernel[(1,)](
+    generic = kernel[(1, )](
         lhs_blob.view(torch.int8),
         lhs_blob.view(torch.float16),
         rhs_blob,
@@ -569,25 +469,20 @@ def test_kai_w8_prefill_m16_fuses_ordinary_tl_dot_to_smmla(k_size):
         # graph while the frontend kernel keeps a regular logical tl.dot.
         for chunk in range(0, K // 32):
             lhs_base = chunk * 128
-            lhs0 = tl.load(
-                lhs_packed_ptr + lhs_base + panel_offsets
-            ).reshape((4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
-            lhs1 = tl.load(
-                lhs_packed_ptr + lhs_base + panel_stride + panel_offsets
-            ).reshape((4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
-            lhs2 = tl.load(
-                lhs_packed_ptr + lhs_base + 2 * panel_stride + panel_offsets
-            ).reshape((4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
-            lhs3 = tl.load(
-                lhs_packed_ptr + lhs_base + 3 * panel_stride + panel_offsets
-            ).reshape((4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
+            lhs0 = tl.load(lhs_packed_ptr + lhs_base + panel_offsets).reshape((4, 4, 8)).permute(1, 0, 2).reshape(
+                (4, 32))
+            lhs1 = tl.load(lhs_packed_ptr + lhs_base + panel_stride + panel_offsets).reshape(
+                (4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
+            lhs2 = tl.load(lhs_packed_ptr + lhs_base + 2 * panel_stride + panel_offsets).reshape(
+                (4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
+            lhs3 = tl.load(lhs_packed_ptr + lhs_base + 3 * panel_stride + panel_offsets).reshape(
+                (4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
             lhs01 = tl.join(lhs0, lhs1).permute(2, 0, 1).reshape((8, 32))
             lhs23 = tl.join(lhs2, lhs3).permute(2, 0, 1).reshape((8, 32))
             lhs = tl.join(lhs01, lhs23).permute(2, 0, 1).reshape((16, 32))
 
-            rhs = tl.load(
-                rhs_packed_ptr + chunk * 128 + panel_offsets
-            ).reshape((4, 4, 8)).permute(0, 2, 1).reshape((32, 4))
+            rhs = tl.load(rhs_packed_ptr + chunk * 128 + panel_offsets).reshape((4, 4, 8)).permute(0, 2, 1).reshape(
+                (32, 4))
             accumulator += tl.dot(lhs, rhs, out_dtype=tl.int32)
 
         rows = tl.arange(0, 16)
@@ -598,20 +493,12 @@ def test_kai_w8_prefill_m16_fuses_ordinary_tl_dot_to_smmla(k_size):
     lhs = torch.randint(-127, 128, (16, k_size), dtype=torch.int8)
     rhs = torch.randint(-127, 128, (4, k_size), dtype=torch.int8)
     lhs_packed = torch.cat([
-        panel.reshape(4, k_size // 8, 8)
-        .permute(1, 0, 2)
-        .contiguous()
-        .reshape(-1)
+        panel.reshape(4, k_size // 8, 8).permute(1, 0, 2).contiguous().reshape(-1)
         for panel in lhs.reshape(4, 4, k_size)
     ])
-    rhs_packed = (
-        rhs.reshape(4, k_size // 8, 8)
-        .permute(1, 0, 2)
-        .contiguous()
-        .reshape(-1)
-    )
+    rhs_packed = (rhs.reshape(4, k_size // 8, 8).permute(1, 0, 2).contiguous().reshape(-1))
     actual = torch.empty((16, 4), dtype=torch.int32)
-    compiled = kernel[(1,)](lhs_packed, rhs_packed, actual, K=k_size)
+    compiled = kernel[(1, )](lhs_packed, rhs_packed, actual, K=k_size)
 
     expected = lhs.to(torch.int32) @ rhs.to(torch.int32).T
     assert torch.equal(actual, expected)
@@ -624,43 +511,29 @@ def test_kai_w8_prefill_m16_fuses_ordinary_tl_dot_to_smmla(k_size):
     assert "folded reload" not in assembly
     llir = compiled.asm["llir"].lower()
     if uses_fixed_i8mm():
-        assert llir.count(
-            "call <4 x i32> @llvm.aarch64.neon.smmla.v4i32.v16i8"
-        ) == 64
+        assert llir.count("call <4 x i32> @llvm.aarch64.neon.smmla.v4i32.v16i8") == 64
         assert "llvm.aarch64.sve.smmla" not in llir
     else:
-        assert llir.count(
-            "call <vscale x 4 x i32> @llvm.aarch64.sve.smmla.nxv4i32"
-        ) == 64
+        assert llir.count("call <vscale x 4 x i32> @llvm.aarch64.sve.smmla.nxv4i32") == 64
     assert "triton_cpu.dot" not in llir
     assert "sdot_gemv" not in llir and "fused_mlp" not in llir
 
     @triton.jit
     def wrong_rhs_layout_kernel(lhs_ptr, rhs_ptr, out_ptr):
         lanes = tl.arange(0, 128)
-        lhs_tile = tl.load(lhs_ptr + lanes).reshape(
-            (4, 4, 8)
-        ).permute(1, 0, 2).reshape((4, 32))
+        lhs_tile = tl.load(lhs_ptr + lanes).reshape((4, 4, 8)).permute(1, 0, 2).reshape((4, 32))
         # The same 128 physical bytes but a different permutation describe a
         # different logical matrix.  It must never match the KAI ABI rewrite.
-        rhs_tile = tl.load(rhs_ptr + lanes).reshape(
-            (4, 4, 8)
-        ).permute(1, 0, 2).reshape((32, 4))
+        rhs_tile = tl.load(rhs_ptr + lanes).reshape((4, 4, 8)).permute(1, 0, 2).reshape((32, 4))
         result = tl.dot(lhs_tile, rhs_tile, out_dtype=tl.int32)
         rows = tl.arange(0, 4)
         cols = tl.arange(0, 4)
         tl.store(out_ptr + rows[:, None] * 4 + cols[None, :], result)
 
     wrong_actual = torch.empty((4, 4), dtype=torch.int32)
-    generic = wrong_rhs_layout_kernel[(1,)](
-        lhs_packed[:128], rhs_packed[:128], wrong_actual
-    )
-    wrong_lhs = lhs_packed[:128].reshape(4, 4, 8).permute(
-        1, 0, 2
-    ).reshape(4, 32)
-    wrong_rhs = rhs_packed[:128].reshape(4, 4, 8).permute(
-        1, 0, 2
-    ).reshape(32, 4)
+    generic = wrong_rhs_layout_kernel[(1, )](lhs_packed[:128], rhs_packed[:128], wrong_actual)
+    wrong_lhs = lhs_packed[:128].reshape(4, 4, 8).permute(1, 0, 2).reshape(4, 32)
+    wrong_rhs = rhs_packed[:128].reshape(4, 4, 8).permute(1, 0, 2).reshape(32, 4)
     assert torch.equal(
         wrong_actual,
         wrong_lhs.to(torch.int32) @ wrong_rhs.to(torch.int32),

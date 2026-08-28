@@ -33,8 +33,7 @@ std::unique_ptr<OperationPass<ModuleOp>>
 createDecomposeFpConversions(bool decomposeBf16Conversions,
                              bool decomposeFp8Conversions);
 std::unique_ptr<OperationPass<ModuleOp>> createOptimizeMasks();
-std::unique_ptr<OperationPass<ModuleOp>>
-createMarkWideBf16StoresVolatile();
+std::unique_ptr<OperationPass<ModuleOp>> createMarkWideBf16StoresVolatile();
 
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotProduct();
 std::unique_ptr<OperationPass<ModuleOp>>
@@ -42,8 +41,7 @@ createConvertDotProduct(bool useHorizontalSum);
 std::unique_ptr<OperationPass<ModuleOp>>
 createConvertDotProduct(bool useHorizontalSum, bool enableBf16);
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertDotProduct(bool useHorizontalSum, bool enableBf16,
-                        bool enableI8);
+createConvertDotProduct(bool useHorizontalSum, bool enableBf16, bool enableI8);
 
 std::unique_ptr<OperationPass<ModuleOp>> createConvertDotToAMX();
 std::unique_ptr<OperationPass<ModuleOp>>
