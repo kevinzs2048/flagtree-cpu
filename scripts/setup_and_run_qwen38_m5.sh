@@ -91,15 +91,15 @@ prepare_runtime_bundle() {
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/setup_and_run_dflash2_m5.sh models
-  bash scripts/setup_and_run_dflash2_m5.sh env
-  bash scripts/setup_and_run_dflash2_m5.sh run-nospec "你的问题"
-  bash scripts/setup_and_run_dflash2_m5.sh run-dflash2 "你的问题"
-  bash scripts/setup_and_run_dflash2_m5.sh benchmark-nospec
-  bash scripts/setup_and_run_dflash2_m5.sh benchmark-dflash2
-  bash scripts/setup_and_run_dflash2_m5.sh all "你的问题"
-  bash scripts/setup_and_run_dflash2_m5.sh doctor-nospec
-  bash scripts/setup_and_run_dflash2_m5.sh doctor-dflash2
+  bash scripts/setup_and_run_qwen38_m5.sh models
+  bash scripts/setup_and_run_qwen38_m5.sh env
+  bash scripts/setup_and_run_qwen38_m5.sh run-nospec "你的问题"
+  bash scripts/setup_and_run_qwen38_m5.sh run-dflash2 "你的问题"
+  bash scripts/setup_and_run_qwen38_m5.sh benchmark-nospec
+  bash scripts/setup_and_run_qwen38_m5.sh benchmark-dflash2
+  bash scripts/setup_and_run_qwen38_m5.sh all "你的问题"
+  bash scripts/setup_and_run_qwen38_m5.sh doctor-nospec
+  bash scripts/setup_and_run_qwen38_m5.sh doctor-dflash2
 
 Compatibility aliases:
   run, benchmark and doctor select the DFlash2 route.
