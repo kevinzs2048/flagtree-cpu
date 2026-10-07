@@ -9,6 +9,7 @@
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVMPass.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Dialect/Vector/Transforms/Passes.h"
@@ -279,6 +280,43 @@ void init_triton_cpu(py::module &&m) {
           auto op = builder.create<mlir::triton::cpu::RawCallOp>(type, args, symbol);
           return type ? py::cast(op.getResult()) : py::none();
         });
+
+  m.def("add_single_program_entry", [](mlir::ModuleOp &mod,
+                                       const std::string &kernelName) {
+    // Export an additional C ABI entry for exactly one program at (0,0,0).
+    // The ordinary grid entry is retained unchanged for the CPU launcher.
+    auto kernel = mod.lookupSymbol<mlir::LLVM::LLVMFuncOp>(kernelName);
+    if (!kernel || kernel.isExternal())
+      throw std::runtime_error(
+          "single-program entry requires a defined CPU kernel");
+    auto type = kernel.getFunctionType();
+    auto params = type.getParams();
+    if (type.isVarArg() || params.size() < 6)
+      throw std::runtime_error("invalid CPU grid ABI");
+    for (auto param : params.take_back(6))
+      if (!param.isInteger(32))
+        throw std::runtime_error("CPU grid arguments must be six i32 values");
+    std::string name = kernelName + "__single_program";
+    if (mod.lookupSymbol(name))
+      throw std::runtime_error("single-program entry symbol already exists");
+    mlir::OpBuilder builder(mod.getContext());
+    builder.setInsertionPointToEnd(mod.getBody());
+    auto entryType = mlir::LLVM::LLVMFunctionType::get(
+        type.getReturnType(), params.drop_back(6), false);
+    auto entry = mlir::LLVM::LLVMFuncOp::create(builder, kernel.getLoc(), name,
+                                                entryType);
+    auto *block = entry.addEntryBlock(builder);
+    builder.setInsertionPointToStart(block);
+    llvm::SmallVector<mlir::Value> args(block->getArguments());
+    for (int value : {0, 0, 0, 1, 1, 1})
+      args.push_back(mlir::LLVM::ConstantOp::create(
+          builder, kernel.getLoc(), builder.getI32Type(),
+          builder.getI32IntegerAttr(value)));
+    auto call =
+        mlir::LLVM::CallOp::create(builder, kernel.getLoc(), kernel, args);
+    mlir::LLVM::ReturnOp::create(builder, kernel.getLoc(), call.getResults());
+    return name;
+  });
 
   m.def("find_kernel_names", [](mlir::ModuleOp &mod) {
     std::vector<std::string> res;

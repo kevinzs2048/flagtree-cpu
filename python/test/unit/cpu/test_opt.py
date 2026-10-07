@@ -84,3 +84,33 @@ def test_vec_cdiv(device):
     arg0 = torch.zeros((16, ), dtype=torch.int32)
     arg1 = torch.empty_like(arg0)
     kernel[(1, )](arg0, arg1)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_single_program_c_entry_preserves_grid_launcher(enabled):
+    import ctypes
+
+    @triton.jit
+    def kernel(out, value):
+        x, y, z = tl.program_id(0), tl.program_id(1), tl.program_id(2)
+        nx, ny, nz = tl.num_programs(0), tl.num_programs(1), tl.num_programs(2)
+        tl.store(out + x + nx * (y + ny * z), value + 100 * nx + 10 * ny + nz)
+
+    output = torch.full((8,), -1, dtype=torch.int32)
+    # Warmup exports metadata but never executes the kernel.
+    compiled = kernel.warmup(output, 7, grid=(2, 2, 2), enable_single_program_entry=enabled)
+    assert torch.equal(output, torch.full_like(output, -1))
+    entry_name = getattr(compiled.metadata, "single_program_name", None)
+    if enabled:
+        assert entry_name == compiled.name + "__single_program"
+        library = ctypes.CDLL(compiled.metadata_group[compiled.name + ".so"])
+        entry = getattr(library, entry_name)
+        entry.argtypes = [ctypes.c_void_p, ctypes.c_int32]
+        entry.restype = None
+        entry(output.data_ptr(), 7)
+        assert output.tolist() == [118, -1, -1, -1, -1, -1, -1, -1]
+    else:
+        assert entry_name is None
+    # Enabling the extra entry must not specialize the ordinary grid to one.
+    kernel[(2, 2, 2)](output, 7, enable_single_program_entry=enabled)
+    assert output.tolist() == [229] * 8

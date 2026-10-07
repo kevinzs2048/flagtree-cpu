@@ -75,6 +75,9 @@ class CPUOptions:
     # Max number of threads to be used for a kernel call.
     # Zero value is used to utilize all available CPU cores.
     num_cpu_threads: int = 0
+    # Extra C entry taking only kernel arguments, with program IDs 0 and grid 1.
+    # The ordinary grid launcher ABI is always preserved.
+    enable_single_program_entry: bool = False
     cluster_dims: tuple = (1, 1, 1)
     extern_libs: dict = None
     debug: bool = False
@@ -420,13 +423,21 @@ class CPUBackend(BaseBackend):
         # alignment cliff while preserving the 16-element compute tile.
         if options.a720_bf16_store_workaround:
             cpu.passes.ttcpuir.add_mark_wide_bf16_stores_volatile(pm)
-        if os.environ.get("TRITON_DISABLE_LINE_INFO", "0") == "0":
-            passes.llvmir.add_di_scope(pm)
         pm.run(mod, "make_llir")
 
         # Find kernel fn
         kernel_names = cpu.find_kernel_names(mod)
         assert len(kernel_names) == 1, f"expected exactly 1 kernel in a module, got {kernel_names}"
+
+        if options.enable_single_program_entry:
+            metadata["single_program_name"] = cpu.add_single_program_entry(mod, kernel_names[0])
+
+        # Create a distinct debug subprogram for each entry after adding the
+        # wrapper; reusing an existing function's DISubprogram is invalid LLVM.
+        if os.environ.get("TRITON_DISABLE_LINE_INFO", "0") == "0":
+            debug_pm = ir.pass_manager(mod.context)
+            passes.llvmir.add_di_scope(debug_pm)
+            debug_pm.run(mod, "make_llir_debug_scope")
 
         # LLVM-IR (MLIR) -> LLVM-IR (LLVM)
         llvm.init_targets()

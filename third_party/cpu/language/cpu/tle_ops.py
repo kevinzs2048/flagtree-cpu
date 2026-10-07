@@ -20,6 +20,12 @@ def raw_call(symbol, *args, result_dtype=core.int32, _semantic=None):
     Pass pointer addresses as uint64 on 64-bit hosts. Values retain their
     explicit integer/float widths. Set result_dtype=None for a void function.
     This call is retained when its result is unused.
+
+    Kernels used as native single-program leaves may request the CPU compiler
+    option ``enable_single_program_entry=True``. The additional symbol in
+    ``compiled.metadata.single_program_name`` accepts only kernel arguments;
+    it fixes program IDs to zero and all grid dimensions to one. The ordinary
+    compiled entry and Triton launch interface keep their full grid ABI.
     """
     symbol = core._unwrap_if_constexpr(symbol)
     result_dtype = core._unwrap_if_constexpr(result_dtype)
