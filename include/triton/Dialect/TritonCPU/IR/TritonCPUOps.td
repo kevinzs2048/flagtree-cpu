@@ -28,8 +28,8 @@ def GlobalMemory : Resource<"::mlir::triton::GlobalMemory">;
 def TTC_RawCallOp : TTC_Op<"raw_call", [MemoryEffects<[
     MemRead<GlobalMemory>, MemWrite<GlobalMemory>]>]> {
     let summary = "TLE CPU scalar native C ABI call";
-    let arguments = (ins Variadic<AnyInteger>:$args, StrAttr:$symbol);
-    let results = (outs AnyInteger:$result);
+    let arguments = (ins Variadic<AnyTypeOf<[AnyInteger, AnyFloat]>>:$args, StrAttr:$symbol);
+    let results = (outs Optional<AnyTypeOf<[AnyInteger, AnyFloat]>>:$result);
     let assemblyFormat = "operands attr-dict `:` functional-type(operands, $result)";
 }
 

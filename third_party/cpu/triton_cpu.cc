@@ -274,9 +274,10 @@ void init_triton_cpu(py::module &&m) {
   m.def("create_raw_call",
         [](TritonOpBuilder &builder, const std::string &symbol,
            const std::vector<mlir::Value> &args,
-           mlir::Type result) -> mlir::Value {
-          return builder.create<mlir::triton::cpu::RawCallOp>(result, args,
-                                                              symbol);
+           py::object result) -> py::object {
+          mlir::Type type = result.is_none() ? mlir::Type() : result.cast<mlir::Type>();
+          auto op = builder.create<mlir::triton::cpu::RawCallOp>(type, args, symbol);
+          return type ? py::cast(op.getResult()) : py::none();
         });
 
   m.def("find_kernel_names", [](mlir::ModuleOp &mod) {

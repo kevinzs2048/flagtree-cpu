@@ -217,7 +217,9 @@ struct RawCallOpConversion : public OpConversionPattern<RawCallOp> {
   matchAndRewrite(RawCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto module = op->getParentOfType<ModuleOp>();
-    auto result = getTypeConverter()->convertType(op.getType());
+    auto result = op.getNumResults()
+                      ? getTypeConverter()->convertType(op.getResult().getType())
+                      : LLVM::LLVMVoidType::get(op.getContext());
     auto args = llvm::to_vector(adaptor.getArgs().getTypes());
     auto type = LLVM::LLVMFunctionType::get(result, args, false);
     auto function = module.lookupSymbol<LLVM::LLVMFuncOp>(op.getSymbol());
