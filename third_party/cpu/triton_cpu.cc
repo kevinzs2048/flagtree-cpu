@@ -276,13 +276,16 @@ void init_triton_cpu(py::module &&m) {
         [](TritonOpBuilder &builder, const std::string &symbol,
            const std::vector<mlir::Value> &args,
            py::object result) -> py::object {
-          mlir::Type type = result.is_none() ? mlir::Type() : result.cast<mlir::Type>();
-          auto op = builder.create<mlir::triton::cpu::RawCallOp>(type, args, symbol);
+          mlir::Type type =
+              result.is_none() ? mlir::Type() : result.cast<mlir::Type>();
+          auto op =
+              builder.create<mlir::triton::cpu::RawCallOp>(type, args, symbol);
           return type ? py::cast(op.getResult()) : py::none();
         });
 
   m.def("add_single_program_entry", [](mlir::ModuleOp &mod,
-                                       const std::string &kernelName) {
+                                       const std::string &kernelName,
+                                       const std::string &returnKind) {
     // Export an additional C ABI entry for exactly one program at (0,0,0).
     // The ordinary grid entry is retained unchanged for the CPU launcher.
     auto kernel = mod.lookupSymbol<mlir::LLVM::LLVMFuncOp>(kernelName);
@@ -301,20 +304,67 @@ void init_triton_cpu(py::module &&m) {
       throw std::runtime_error("single-program entry symbol already exists");
     mlir::OpBuilder builder(mod.getContext());
     builder.setInsertionPointToEnd(mod.getBody());
-    auto entryType = mlir::LLVM::LLVMFunctionType::get(
-        type.getReturnType(), params.drop_back(6), false);
+    auto userParams = params.drop_back(6);
+    mlir::Type resultType = type.getReturnType();
+    const bool scalarResult = returnKind != "void";
+    if (scalarResult) {
+      if (!mlir::isa<mlir::LLVM::LLVMVoidType>(type.getReturnType()))
+        throw std::runtime_error(
+            "scalar output return requires a void CPU kernel");
+      if (userParams.empty() ||
+          !mlir::isa<mlir::LLVM::LLVMPointerType>(userParams.back()) ||
+          mlir::cast<mlir::LLVM::LLVMPointerType>(userParams.back())
+                  .getAddressSpace() != 0)
+        throw std::runtime_error(
+            "scalar C return requires a final output pointer");
+      if (returnKind == "i32")
+        resultType = builder.getI32Type();
+      else if (returnKind == "i64")
+        resultType = builder.getI64Type();
+      else if (returnKind == "f32")
+        resultType = builder.getF32Type();
+      else if (returnKind == "f64")
+        resultType = builder.getF64Type();
+      else
+        throw std::runtime_error("unsupported scalar C return type");
+      userParams = userParams.drop_back();
+    }
+    auto entryType =
+        mlir::LLVM::LLVMFunctionType::get(resultType, userParams, false);
     auto entry = mlir::LLVM::LLVMFuncOp::create(builder, kernel.getLoc(), name,
                                                 entryType);
     auto *block = entry.addEntryBlock(builder);
     builder.setInsertionPointToStart(block);
     llvm::SmallVector<mlir::Value> args(block->getArguments());
+    mlir::Value resultSlot;
+    if (scalarResult) {
+      auto one = mlir::LLVM::ConstantOp::create(builder, kernel.getLoc(),
+                                                builder.getI32Type(),
+                                                builder.getI32IntegerAttr(1));
+      resultSlot = mlir::LLVM::AllocaOp::create(
+          builder, kernel.getLoc(),
+          mlir::LLVM::LLVMPointerType::get(mod.getContext()), resultType, one,
+          resultType.getIntOrFloatBitWidth() / 8);
+      auto zero =
+          mlir::LLVM::ConstantOp::create(builder, kernel.getLoc(), resultType,
+                                         builder.getZeroAttr(resultType));
+      mlir::LLVM::StoreOp::create(builder, kernel.getLoc(), zero, resultSlot);
+      args.push_back(resultSlot);
+    }
     for (int value : {0, 0, 0, 1, 1, 1})
       args.push_back(mlir::LLVM::ConstantOp::create(
           builder, kernel.getLoc(), builder.getI32Type(),
           builder.getI32IntegerAttr(value)));
     auto call =
         mlir::LLVM::CallOp::create(builder, kernel.getLoc(), kernel, args);
-    mlir::LLVM::ReturnOp::create(builder, kernel.getLoc(), call.getResults());
+    if (scalarResult) {
+      auto result = mlir::LLVM::LoadOp::create(builder, kernel.getLoc(),
+                                               resultType, resultSlot);
+      mlir::LLVM::ReturnOp::create(builder, kernel.getLoc(),
+                                   mlir::ValueRange{result});
+    } else {
+      mlir::LLVM::ReturnOp::create(builder, kernel.getLoc(), call.getResults());
+    }
     return name;
   });
 

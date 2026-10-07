@@ -114,3 +114,112 @@ def test_single_program_c_entry_preserves_grid_launcher(enabled):
     # Enabling the extra entry must not specialize the ordinary grid to one.
     kernel[(2, 2, 2)](output, 7, enable_single_program_entry=enabled)
     assert output.tolist() == [229] * 8
+
+
+@pytest.mark.parametrize("kind,dtype,ctype", [
+    ("i32", torch.int32, "c_int32"), ("i64", torch.int64, "c_int64"),
+    ("f32", torch.float32, "c_float"), ("f64", torch.float64, "c_double"),
+])
+def test_single_program_c_scalar_return(kind, dtype, ctype):
+    import ctypes
+
+    @triton.jit
+    def kernel(out, value, result):
+        tl.store(out + tl.program_id(0), value * 2)
+        tl.store(result, value + 3)
+
+    output = torch.full((2,), -1, dtype=torch.int32)
+    result = torch.full((1,), -1, dtype=dtype)
+    compiled = kernel.warmup(output, 7, result, grid=(1,),
+                             enable_single_program_entry=True,
+                             single_program_return_type=kind)
+    library = ctypes.CDLL(compiled.metadata_group[compiled.name + ".so"])
+    entry = getattr(library, compiled.metadata.single_program_name)
+    entry.argtypes = [ctypes.c_void_p, ctypes.c_int32]
+    entry.restype = getattr(ctypes, ctype)
+    assert entry(output.data_ptr(), 7) == 10
+    assert output.tolist() == [14, -1]
+    assert result.item() == -1  # No result pointer crosses the additional C ABI.
+    kernel[(2,)](output, 7, result, enable_single_program_entry=True,
+                 single_program_return_type=kind)
+    assert output.tolist() == [14, 14]
+    assert result.item() == 10
+
+
+def test_single_program_scalar_return_rejects_invalid_abi():
+    from triton.backends.cpu.compiler import CPUOptions
+
+    with pytest.raises(ValueError, match="return type"):
+        CPUOptions(enable_single_program_entry=True, single_program_return_type="i8")
+    with pytest.raises(ValueError, match="requires"):
+        CPUOptions(single_program_return_type="i32")
+
+    @triton.jit
+    def kernel(out, value):
+        tl.store(out, value)
+
+    with pytest.raises(RuntimeError, match="final output pointer"):
+        kernel.warmup(torch.empty(1, dtype=torch.int32), 7, grid=(1,),
+                      enable_single_program_entry=True, single_program_return_type="i32")
+
+
+def test_cpu_external_ir_link_and_disk_cache_invalidation(tmp_path):
+    from triton.language.extra.cpu.tle_ops import raw_call
+
+    @triton.jit
+    def kernel(out, value):
+        result = raw_call("cpu_test_add", value.to(tl.int32))
+        tl.store(out, result)
+
+    library = tmp_path / "leaf.ll"
+    output = torch.empty(1, dtype=torch.int32)
+    compiled_hashes = []
+    for increment in (17, 29):
+        library.write_text(
+            "define i32 @cpu_test_add(i32 %x) {\n"
+            f"  %y = add i32 %x, {increment}\n"
+            "  ret i32 %y\n}\n"
+        )
+        # As with loaded DSOs, library files remain immutable while a prepared
+        # kernel is used. A fresh JIT object exercises persistent cache lookup.
+        fresh = triton.jit(kernel.fn)
+        compiled = fresh.warmup(output, 7, grid=(1,), extern_libs={"leaf": str(library)})
+        fresh[(1,)](output, 7, extern_libs={"leaf": str(library)})
+        assert output.item() == 7 + increment
+        compiled_hashes.append(compiled.hash)
+    assert compiled_hashes[0] != compiled_hashes[1]
+
+
+def test_cpu_external_ir_tls_uses_shared_library_relocations(tmp_path):
+    import ctypes
+
+    from triton.language.extra.cpu.tle_ops import raw_call
+
+    library = tmp_path / "tls.ll"
+    library.write_text(
+        "@counter = internal thread_local global i32 0\n"
+        "define i32 @cpu_test_tls(i32 %x) {\n"
+        "  %old = load i32, ptr @counter\n"
+        "  %sum = add i32 %old, %x\n"
+        "  store i32 %sum, ptr @counter\n"
+        "  ret i32 %sum\n}\n"
+        "!llvm.module.flags = !{!0, !1}\n"
+        '!0 = !{i32 8, !"PIC Level", i32 2}\n'
+        '!1 = !{i32 7, !"PIE Level", i32 2}\n'
+    )
+
+    @triton.jit
+    def kernel(out, value):
+        tl.store(out, raw_call("cpu_test_tls", value.to(tl.int32)))
+
+    output = torch.zeros(1, dtype=torch.int32)
+    compiled = kernel.warmup(output, 7, grid=(1,), enable_single_program_entry=True,
+                             extern_libs={"tls": str(library)})
+    assert '\"PIE Level\", i32 0' in compiled.asm["llir"]
+    dso = ctypes.CDLL(compiled.metadata_group[compiled.name + ".so"])
+    entry = getattr(dso, compiled.metadata.single_program_name)
+    entry.argtypes = [ctypes.c_void_p, ctypes.c_int32]
+    entry.restype = None
+    for expected in (7, 14):
+        entry(output.data_ptr(), 7)
+        assert output.item() == expected

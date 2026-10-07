@@ -26,6 +26,22 @@ def raw_call(symbol, *args, result_dtype=core.int32, _semantic=None):
     ``compiled.metadata.single_program_name`` accepts only kernel arguments;
     it fixes program IDs to zero and all grid dimensions to one. The ordinary
     compiled entry and Triton launch interface keep their full grid ABI.
+
+    With ``single_program_return_type="i32"`` (also i64/f32/f64), the additional
+    C entry omits the kernel's final output pointer and returns that scalar.
+    The kernel must treat this pointer as one scalar of the specified type,
+    must not let it escape, and must not access adjacent storage. Its temporary
+    storage starts at zero. The ordinary launcher still takes the original
+    output pointer. LLVM can promote the temporary to an SSA return value,
+    avoiding a status-buffer store/load around a scalar native call.
+
+    CPU ``extern_libs={name: bitcode_path}`` can link leaves from LLVM bitcode
+    before optimization. Use a compatible LLVM toolchain, host architecture,
+    target features and C ABI. Compile shared-object leaves with ``-fPIC``;
+    CPU linking overrides PIE module flags because the JIT loads a DSO.
+    Bitcode contents participate in the persistent compilation cache key.
+    Keep files immutable while a prepared kernel is in use: the process-local
+    JIT cache retains already compiled entries, like loaded shared libraries.
     """
     symbol = core._unwrap_if_constexpr(symbol)
     result_dtype = core._unwrap_if_constexpr(result_dtype)

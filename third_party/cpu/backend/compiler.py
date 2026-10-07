@@ -78,6 +78,8 @@ class CPUOptions:
     # Extra C entry taking only kernel arguments, with program IDs 0 and grid 1.
     # The ordinary grid launcher ABI is always preserved.
     enable_single_program_entry: bool = False
+    # Optionally return the final scalar output argument through the C ABI.
+    single_program_return_type: Optional[str] = None
     cluster_dims: tuple = (1, 1, 1)
     extern_libs: dict = None
     debug: bool = False
@@ -105,10 +107,20 @@ class CPUOptions:
     a720_bf16_store_workaround: bool = False
 
     def __post_init__(self):
-        pass
+        if self.extern_libs:
+            libraries = self.extern_libs.items() if isinstance(self.extern_libs, dict) else self.extern_libs
+            object.__setattr__(self, "extern_libs", tuple(sorted(
+                (name, str(Path(path).resolve())) for name, path in libraries
+            )))
+        if self.single_program_return_type not in (None, "i32", "i64", "f32", "f64"):
+            raise ValueError("Unsupported single-program C return type")
+        if self.single_program_return_type and not self.enable_single_program_entry:
+            raise ValueError("A scalar C return requires enable_single_program_entry")
 
     def hash(self):
         hash_dict = dict(self.__dict__)
+        for name, path in self.extern_libs or ():
+            hash_dict["extern:" + name] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
         key = "_".join([f"{name}-{val}" for name, val in sorted(hash_dict.items())])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
@@ -430,7 +442,10 @@ class CPUBackend(BaseBackend):
         assert len(kernel_names) == 1, f"expected exactly 1 kernel in a module, got {kernel_names}"
 
         if options.enable_single_program_entry:
-            metadata["single_program_name"] = cpu.add_single_program_entry(mod, kernel_names[0])
+            metadata["single_program_name"] = cpu.add_single_program_entry(
+                mod, kernel_names[0], options.single_program_return_type or "void"
+            )
+            metadata["single_program_return_type"] = options.single_program_return_type
 
         # Create a distinct debug subprogram for each entry after adding the
         # wrapper; reusing an existing function's DISubprogram is invalid LLVM.
@@ -446,9 +461,13 @@ class CPUBackend(BaseBackend):
         if llvm_mod is None:
             raise RuntimeError("Failed to convert to LLVM IR")
         llvm.set_host_target(llvm_mod)
-        #if options.extern_libs:
-        #    paths = [path for (name, path) in options.extern_libs]
-        #   llvm.link_extern_libs(llvm_mod, paths)
+        if options.extern_libs:
+            # CPU kernels are shared libraries, never PIE executables. Prevent
+            # linked C/C++ bitcode from importing an executable TLS model.
+            llvm_mod.add_flag(llvm.MODULE_FLAG_BEHAVIOR_OVERRIDE, "PIC Level", 2)
+            llvm_mod.add_flag(llvm.MODULE_FLAG_BEHAVIOR_OVERRIDE, "PIE Level", 0)
+            paths = [path for _, path in options.extern_libs]
+            llvm.link_extern_libs(llvm_mod, paths)
         llvm.optimize_module(llvm_mod, llvm.OPTIMIZE_O3)
         # Get some metadata
         metadata["shared"] = 0
